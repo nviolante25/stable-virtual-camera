@@ -651,6 +651,9 @@ if __name__ == "__main__":
 
         ckpt_resume_path = opt.resume_from_checkpoint
 
+        print("ckpt_resume_path: ", ckpt_resume_path)
+        print("trainer_config: ", trainer_config)
+
         if not "devices" in trainer_config and trainer_config["accelerator"] != "gpu":
             del trainer_config["accelerator"]
             cpu = True

@@ -150,6 +150,7 @@ class DiffusionEngine(pl.LightningModule):
         return z
 
     def forward(self, x, batch):
+        print("\nDiffusionEngine::forward self.conditioner:\n", self.conditioner)
         loss = self.loss_fn(self.model, self.denoiser, self.conditioner, x, batch)
         loss_mean = loss.mean()
         loss_dict = {"loss": loss_mean}
@@ -163,6 +164,7 @@ class DiffusionEngine(pl.LightningModule):
         return loss, loss_dict
 
     def training_step(self, batch, batch_idx):
+        print("\nDiffusionEngine::training_step batch:\n", batch)
         loss, loss_dict = self.shared_step(batch)
 
         self.log_dict(
