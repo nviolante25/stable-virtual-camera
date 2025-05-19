@@ -903,6 +903,7 @@ if __name__ == "__main__":
         # run
         if opt.train:
             try:
+                print(model)
                 trainer.fit(model, data, ckpt_path=ckpt_resume_path)
             except Exception:
                 if not opt.debug:

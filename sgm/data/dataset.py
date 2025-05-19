@@ -28,7 +28,9 @@ import webdataset as wds
 from torch.utils.data import DataLoader
 from torchvision import transforms
 
-# try: TODO: fix torchdata version
+# used in "generative-models" repo
+# however, instructions to retrieve stable-datasets doesn't seem to work
+# try: # TODO: fix torchdata version
 #     from sdata import create_dataset, create_dummy_dataset, create_loader
 # except ImportError as e:
 #     print("#" * 100)

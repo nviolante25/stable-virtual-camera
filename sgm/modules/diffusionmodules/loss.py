@@ -88,7 +88,10 @@ class StandardDiffusionLoss(nn.Module):
             network, noised_input, sigmas, cond, **additional_model_inputs
         )
         print("\nStandardDiffusionLoss::forward cond2:\n", cond)
-        w = append_dims(self.loss_weighting(sigmas, cond["mask"]), input.ndim)
+        if "mask" in cond:
+            w = append_dims(self.loss_weighting(sigmas, cond["mask"]), input.ndim)
+        else:
+            w = append_dims(self.loss_weighting(sigmas), input.ndim)
         return self.get_loss(model_output, input, w)
 
     def get_loss(self, model_output, target, w):
