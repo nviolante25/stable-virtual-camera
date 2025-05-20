@@ -1,0 +1,48 @@
+model: # define model
+  target: seva.modules.autoencoder.LightningAutoencoder
+  params: # with all its params
+    model:
+      # target to instantiate object
+      target: seva.modules.autoencoder.Autoencoder
+      params:
+
+  learning_rate: 1e-5 # want this in 'model:'
+
+data: # load data from .py
+  target: seva.data.mvh_dataloader.MVHumanNetLoader
+  params:
+    root_dir: "/path/to/mvhumannet/data"
+    batch_size: 32
+    num_workers: 2
+    shuffle: True
+    image_size: 256
+
+lightning:
+  modelcheckpoint:
+    params:
+      every_n_train_steps: 5000
+
+  callbacks:
+    metrics_over_trainsteps_checkpoint:
+      params:
+        every_n_train_steps: 25000
+
+    image_logger:
+      target: main.ImageLogger
+      params:
+        disabled: False
+        batch_frequency: 1000
+        max_images: 16
+        increase_log_steps: True
+        log_first_step: False
+        log_images_kwargs:
+          use_ema_scope: False
+          N: 16
+          n_rows: 4
+
+  trainer:
+    devices: 0,
+    benchmark: True
+    num_sanity_val_steps: 0
+    accumulate_grad_batches: 1
+    max_epochs: 20
