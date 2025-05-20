@@ -54,7 +54,7 @@ class StandardDiffusionLoss(nn.Module):
         batch: Dict,
     ) -> torch.Tensor:
         cond = conditioner(batch)
-        print("\nStandardDiffusionLoss::forward cond:\n", cond)
+        # print("\nStandardDiffusionLoss::forward cond:\n", cond)
         return self._forward(network, denoiser, cond, input, batch)
 
     def _forward(
@@ -87,7 +87,7 @@ class StandardDiffusionLoss(nn.Module):
         model_output = denoiser(
             network, noised_input, sigmas, cond, **additional_model_inputs
         )
-        print("\nStandardDiffusionLoss::forward cond2:\n", cond)
+        # print("\nStandardDiffusionLoss::forward cond2:\n", cond)
         if "mask" in cond:
             w = append_dims(self.loss_weighting(sigmas, cond["mask"]), input.ndim)
         else:

@@ -348,8 +348,11 @@ class ImageLogger(Callback):
         pl_module: Union[None, pl.LightningModule] = None,
     ):
         root = os.path.join(save_dir, "images", split)
+        print("ImageLogger::log_local:rootdir to save images: ", root)
+        print("number of images: ", len(images))
         for k in images:
             if isheatmap(images[k]):
+                print("ImageLogger::log_local:in local log_local:heatmap:")
                 fig, ax = plt.subplots()
                 ax = ax.matshow(
                     images[k].cpu().numpy(), cmap="hot", interpolation="lanczos"
@@ -366,6 +369,7 @@ class ImageLogger(Callback):
                 plt.close()
                 # TODO: support wandb
             else:
+                print("ImageLogger::log_local:in local log_local:not heatmap:")
                 grid = torchvision.utils.make_grid(images[k], nrow=4)
                 if self.rescale:
                     grid = (grid + 1.0) / 2.0  # -1,1 -> 0,1; c,h,w
@@ -376,10 +380,12 @@ class ImageLogger(Callback):
                     k, global_step, current_epoch, batch_idx
                 )
                 path = os.path.join(root, filename)
+                print("ImageLogger::Saving image to: ", path)
                 os.makedirs(os.path.split(path)[0], exist_ok=True)
                 img = Image.fromarray(grid)
                 img.save(path)
                 if exists(pl_module):
+                    print("ImageLogger::log_local:in local log_local:pl_module exists!")
                     assert isinstance(
                         pl_module.logger, WandbLogger
                     ), "logger_log_image only supports WandbLogger currently"
@@ -393,7 +399,13 @@ class ImageLogger(Callback):
 
     @rank_zero_only
     def log_img(self, pl_module, batch, batch_idx, split="train"):
+        print("ImageLogger::LOG_IMG inside function!")
         check_idx = batch_idx if self.log_on_batch_idx else pl_module.global_step
+        print("checking if statements")
+        print(self.check_frequency(check_idx))
+        print(hasattr(pl_module, "log_images"))
+        print(callable(pl_module.log_images))
+        print(self.max_images > 0)
         if (
             self.check_frequency(check_idx)
             and hasattr(pl_module, "log_images")  # batch_idx % self.batch_freq == 0
@@ -413,6 +425,8 @@ class ImageLogger(Callback):
                 "cache_enabled": torch.is_autocast_cache_enabled(),
             }
             with torch.no_grad(), torch.cuda.amp.autocast(**gpu_autocast_kwargs):
+                # this sholud be where images are logged!
+                print("ImageLogger::Logging images")
                 images = pl_module.log_images(
                     batch, split=split, **self.log_images_kwargs
                 )
@@ -425,7 +439,7 @@ class ImageLogger(Callback):
                     images[k] = images[k].detach().float().cpu()
                     if self.clamp and not isheatmap(images[k]):
                         images[k] = torch.clamp(images[k], -1.0, 1.0)
-
+            print("ImageLogger::calling log_local")
             self.log_local(
                 pl_module.logger.save_dir,
                 split,
@@ -437,6 +451,7 @@ class ImageLogger(Callback):
                 if isinstance(pl_module.logger, WandbLogger)
                 else None,
             )
+            print("ImageLogger::finished log_local")
 
             if is_train:
                 pl_module.train()
@@ -479,6 +494,12 @@ class ImageLogger(Callback):
             ) and batch_idx > 0:
                 self.log_gradients(trainer, pl_module, batch_idx=batch_idx)
 
+    @rank_zero_only
+    def on_test_batch_end(self, trainer, pl_module, outputs, batch, batch_idx, *args, **kwargs):
+        print("ImageLogger::on_test_batch_end")
+        if not self.disabled:
+            self.log_img(pl_module, batch, batch_idx, split="test")
+
 
 @rank_zero_only
 def init_wandb(save_dir, opt, config, group_name, name_str):
@@ -489,9 +510,10 @@ def init_wandb(save_dir, opt, config, group_name, name_str):
     if opt.debug:
         wandb.init(project=opt.projectname, mode="offline", group=group_name)
     else:
+        config_dict = OmegaConf.to_container(config, resolve=True)
         wandb.init(
             project=opt.projectname,
-            config=config,
+            config=config_dict,
             settings=wandb.Settings(code_dir="./sgm"),
             group=group_name,
             name=name_str,

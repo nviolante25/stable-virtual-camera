@@ -15,6 +15,10 @@ from ..modules.ema import LitEma
 from ..util import (default, disabled_train, get_obj_from_str,
                     instantiate_from_config, log_txt_as_img)
 
+def compute_psnr(pred, target):
+    mse = torch.nn.functional.mse_loss(pred, target)
+    return 10 * torch.log10(1.0 / mse)
+
 
 class DiffusionEngine(pl.LightningModule):
     def __init__(
@@ -150,7 +154,7 @@ class DiffusionEngine(pl.LightningModule):
         return z
 
     def forward(self, x, batch):
-        print("\nDiffusionEngine::forward self.conditioner:\n", self.conditioner)
+        # print("\nDiffusionEngine::forward self.conditioner:\n", self.conditioner)
         loss = self.loss_fn(self.model, self.denoiser, self.conditioner, x, batch)
         loss_mean = loss.mean()
         loss_dict = {"loss": loss_mean}
@@ -164,7 +168,7 @@ class DiffusionEngine(pl.LightningModule):
         return loss, loss_dict
 
     def training_step(self, batch, batch_idx):
-        print("\nDiffusionEngine::training_step batch:\n", batch)
+        # print("\nDiffusionEngine::training_step batch:\n", batch)
         loss, loss_dict = self.shared_step(batch)
 
         self.log_dict(
@@ -187,6 +191,40 @@ class DiffusionEngine(pl.LightningModule):
             )
 
         return loss
+
+    def test_step(self, batch, batch_idx):
+        # Add this debug print
+        print(f"Logger save_dir: {self.logger.save_dir}")
+        
+        # Get ground truth images
+        x = self.get_input(batch)
+        
+        # Generate samples
+        c, uc = self.conditioner.get_unconditional_conditioning(batch)
+        samples = self.sample(c, uc=uc, batch_size=x.shape[0], shape=self.encode_first_stage(x).shape[1:])
+        samples = self.decode_first_stage(samples)
+        
+        # Compute metrics
+        metrics = {
+            'mse': torch.nn.functional.mse_loss(samples, x),
+            'psnr': compute_psnr(samples, x),
+            # 'ssim': self.compute_ssim(samples, x)
+        }
+        
+        # Log metrics
+        self.log_dict(metrics, prog_bar=True, logger=True)
+        
+        # Log images for visualization
+        if batch_idx == 0:
+            # Add debug prints
+            print("Attempting to log images...")
+            images = self.log_images(batch, N=min(8, x.shape[0]), sample=True)
+            print(images["reconstructions"].shape)
+            print("max: ", images["reconstructions"].max())
+            print("min: ", images["reconstructions"].min())
+            print(f"Generated image keys: {list(images.keys())}")
+        
+        return metrics
 
     def on_train_start(self, *args, **kwargs):
         if self.sampler is None or self.loss_fn is None:
