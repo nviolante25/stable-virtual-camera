@@ -97,18 +97,18 @@ class LightningAutoEncoder(AbstractAutoencoder):
         x = self.get_input(batch)
         x_hat = self(x)
 
-        print("Input shapes:")
-        print("x shape:", x.shape)
-        print("x_hat shape:", x_hat.shape)
-        print("Input ranges:")
+        # print("Input shapes:")
+        # print("x shape:", x.shape)
+        # print("x_hat shape:", x_hat.shape)
+        # print("Input ranges:")
         print("x range:", x.min().item(), "to", x.max().item())
         print("x_hat range:", x_hat.min().item(), "to", x_hat.max().item())
-        print("Input types:")
-        print("x dtype:", x.dtype)
-        print("x_hat dtype:", x_hat.dtype)
+        # print("Input types:")
+        # print("x dtype:", x.dtype)
+        # print("x_hat dtype:", x_hat.dtype)
 
-        print("x device: ", x.device)
-        print("x_hat device: ", x_hat.device)
+        # print("x device: ", x.device)
+        # print("x_hat device: ", x_hat.device)
 
         # force x_hat to the range [-1, 1]
         x_hat = torch.clamp(x_hat, -1.0, 1.0)

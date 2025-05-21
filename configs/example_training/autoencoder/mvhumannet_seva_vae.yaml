@@ -1,5 +1,5 @@
 model: # define model
-  base_learning_rate: 1.0e-5 # want this in 'model:'
+  base_learning_rate: 1.0e-4
   target: seva.modules.autoencoder.LightningAutoEncoder
   params: # with all its params
     model:
@@ -7,7 +7,7 @@ model: # define model
       target: seva.modules.autoencoder.AutoEncoder
       # params:
       #   chunk_size: None
-    learning_rate: 1.0e-5
+    learning_rate: 1.0e-4
 
 # data: # load data from .py
 #   target: seva.data.mvh_dataloader.MVHumanNetLoader
@@ -18,13 +18,23 @@ model: # define model
 #     shuffle: True
 #     image_size: 576 # resize to 576x576 output
 
+# data:
+#   target: sgm.data.mnist.MNISTLoader
+#   params:
+#     batch_size: 256
+#     num_workers: 2
+#     prefetch_factor: 1
+#     seva_local: True
+
 data:
-  target: sgm.data.mnist.MNISTLoader
+  target: seva.data.mvh_dataloader.MVHumanNetLoader
   params:
-    batch_size: 256
+    root_dir: "/workspace/datasetvol/mvhuman_data/mv_captures"
+    batch_size: 1
     num_workers: 1
-    prefetch_factor: 1
-    seva_local: True
+    data_limit: 2
+    image_size: 512
+
 
 lightning:
   modelcheckpoint:

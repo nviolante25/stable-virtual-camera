@@ -23,6 +23,7 @@ from seva.data.preprocessing import (
     generate_gaussian_mixture_samples,
     generate_gaussian_samples
 )
+import time
 
 class RandomBBoxCrop(object):
     def __init__(
@@ -132,13 +133,17 @@ class RandomBBoxCrop(object):
                 crop_first=False,
                 padding_mode=True
             )
+
         image_ = torch.as_tensor(image)
-        image = image_[:, y1:y2, x1:x2] # actual crop
+
+        # Perform the actual crop
+        # Instead of cropping, preserve original dimensions and add a bounding box
+        image = image_[:, y1:y2, x1:x2]  # Clone to avoid modifying the original
         return image, K_new
 
 
 class MVHumanNetDataset(Dataset):
-    def __init__(self, root_dir, transforms=None, pre_scale=0.5):
+    def __init__(self, root_dir, transforms=None, pre_scale=0.5, data_limit=None):
         self.root_dir = root_dir             # directory of all subject directories
         self.image_paths = []                # main image data paths
         self.mask_paths = []                 # (+ masks)
@@ -148,10 +153,14 @@ class MVHumanNetDataset(Dataset):
         self.camera_scale = {}               # float, to be multiplied with camera center.
         self.transforms = transforms         # transforms for the random crop
         self.pre_scale = pre_scale           # since MVHumanNet is downsampled, update intrinsics
+        self.data_limit = data_limit # TEMP -- just to limit number of subjects
+
 
         # get paths to relevant data
-        for subject in os.listdir(root_dir):
-            subject_path = os.path.join(root_dir, subject)
+        for i, subject in enumerate(os.listdir(root_dir)):
+            if self.data_limit is not None and i >= self.data_limit:
+                break
+            subject_path = os.path.join(root_dir, subject)  
             if not os.path.isdir(subject_path):
                 continue
 
@@ -182,7 +191,7 @@ class MVHumanNetDataset(Dataset):
                         self.image_paths.append(os.path.join(images_path, camera, timestep.replace('_fmask.png', '.jpg')))
                         self.mask_paths.append(os.path.join(masks_path, camera, timestep))
                         self.annots_paths.append(os.path.join(annots_path, camera, timestep.replace('_fmask.png', '.json')))
-    
+
 
     def __len__(self):
         return len(self.image_paths)
@@ -191,7 +200,7 @@ class MVHumanNetDataset(Dataset):
         img_path = self.image_paths[idx]
         mask_path = self.mask_paths[idx]
         annots_path = self.annots_paths[idx]
-        subject = img_path.split('/')[1]
+        subject = img_path.split('/')[-4] # hardcoded, TODO: change
         camera = img_path.split('/')[-2]
 
         extrinsics = self.subject_projective_params[subject]['extrinsics'][f"1_{camera}.png"]
@@ -200,6 +209,7 @@ class MVHumanNetDataset(Dataset):
         if self.pre_scale != 1:
             intrinsics = update_intrinsics_resize(intrinsics, scale=self.pre_scale)
 
+
         # load in and mask image
         img = Image.open(img_path)
         mask = Image.open(mask_path)
@@ -207,7 +217,7 @@ class MVHumanNetDataset(Dataset):
 
         # bbox params useful for cropping
         H, W = int(annots['height'] * self.pre_scale), int(annots['width'] * self.pre_scale) # images not yet scaled down
-        bbox = torch.tensor(annots['annots'][0]['bbox'][:4]) * self.pre_scale # [x1, y1, x2, y2]
+        bbox = torch.tensor(annots['annots'][0]['bbox'][:4])  # [x1, y1, x2, y2] (already scaled)
         (center_x, center_y), (size_x, size_y) = get_bbox_center_and_size(bbox)
         x1, y1, x2, y2 = int(bbox[0]), int(bbox[1]), int(bbox[2]), int(bbox[3])
         
@@ -216,7 +226,7 @@ class MVHumanNetDataset(Dataset):
         masked_img = Image.composite(img, background, mask)
 
         # distributions to sample
-        # TODO: make these arguments to the dataloader
+        # TODO: do this ONCE in init instead
         # additionally, add the option to not crop
         def center_sampler(batch_size):
             # mean at center of bbox
@@ -243,6 +253,7 @@ class MVHumanNetDataset(Dataset):
         # apply transforms
         if self.transforms is not None:
             cropped_image = self.transforms(cropped_image)
+            # TODO: apply Resize-> update intrinsics
 
         return cropped_image, updated_K, transform_matrix
 
@@ -271,7 +282,8 @@ class MVHumanNetLoader(pl.LightningDataModule):
         batch_size: int,
         num_workers: int = 0,
         shuffle: bool = True,
-        image_size: int = 576
+        image_size: int = 576,
+        data_limit: int = None
     ):
         super().__init__()
         
@@ -279,7 +291,7 @@ class MVHumanNetLoader(pl.LightningDataModule):
         self.batch_size = batch_size
         self.num_workers = num_workers
         self.shuffle = shuffle
-        
+        self.data_limit = data_limit
         # Define transforms
         self.transform = T.Compose([
             T.Resize(image_size), # whatever final resolution we want here
@@ -292,7 +304,8 @@ class MVHumanNetLoader(pl.LightningDataModule):
             self.train_dataset = MVHumanNetDataDictWrapper(
                 MVHumanNetDataset(
                     root_dir=os.path.join(self.root_dir),
-                    transforms=self.transform
+                    transforms=self.transform,
+                    data_limit=self.data_limit
                 )
             )
             # self.val_dataset = MVHumanNetDataDictWrapper(
@@ -305,7 +318,8 @@ class MVHumanNetLoader(pl.LightningDataModule):
             self.test_dataset = MVHumanNetDataDictWrapper(
                 MVHumanNetDataset(
                     root_dir=os.path.join(self.root_dir, "test"),
-                    transforms=self.transform
+                    transforms=self.transform,
+                    data_limit=self.data_limit
                 )
             )
 
@@ -321,14 +335,14 @@ class MVHumanNetLoader(pl.LightningDataModule):
             pin_memory=True
         )
 
-    def val_dataloader(self) -> DataLoader:
-        return DataLoader(
-            self.val_dataset,
-            batch_size=self.batch_size,
-            shuffle=False,
-            num_workers=self.num_workers,
-            pin_memory=True
-        )
+    # def val_dataloader(self) -> DataLoader:
+    #     return DataLoader(
+    #         self.val_dataset,
+    #         batch_size=self.batch_size,
+    #         shuffle=False,
+    #         num_workers=self.num_workers,
+    #         pin_memory=True
+    #     )
 
     def test_dataloader(self) -> DataLoader:
         return DataLoader(
