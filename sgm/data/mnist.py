@@ -28,6 +28,7 @@ class MNISTLoader(pl.LightningDataModule):
         if seva_local:
             # convert images to RGB tensors instead of binary (for SEVA VAE)
             transform = transforms.Compose([
+                transforms.Resize(32),
                 transforms.ToTensor(),
                 transforms.Lambda(lambda x: x.repeat(3, 1, 1)),  # Convert to 3 channels
                 transforms.Lambda(lambda x: x * 2.0 - 1.0)

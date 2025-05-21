@@ -46,7 +46,6 @@ class AutoEncoder(nn.Module):
             return self._encode(x)
 
     def _decode(self, z: torch.Tensor) -> torch.Tensor:
-        # print("SEVA VAE::_decode::z: ", z)
         return self.module.decode(z / self.scale_factor).sample  # type: ignore
 
     def decode(self, z: torch.Tensor, chunk_size: int | None = None) -> torch.Tensor:
@@ -74,6 +73,9 @@ class LightningAutoEncoder(AbstractAutoencoder):
         self.model.train()
         self.learning_rate = learning_rate
         self.save_hyperparameters()
+        self.loss_fn = torchmetrics.image.StructuralSimilarityIndexMeasure(
+            data_range=2.0)
+        # self.loss_fn = torch.nn.functional.mse_loss
 
     def get_input(self, batch: Dict) -> torch.Tensor:
         # assuming unified data format, dataloader returns a dict.
@@ -92,39 +94,51 @@ class LightningAutoEncoder(AbstractAutoencoder):
         return self.model(self.get_input(x) if isinstance(x, dict) else x)
     
     def training_step(self, batch: torch.Tensor, batch_idx: int) -> torch.Tensor:
-        x = self.get_input(batch) # x is dict, x_hat is tensor
+        x = self.get_input(batch)
         x_hat = self(x)
 
-        print("training step: ", type(x), type(batch))
-        print(x.shape)
-        print(x_hat.shape)
+        print("Input shapes:")
+        print("x shape:", x.shape)
+        print("x_hat shape:", x_hat.shape)
+        print("Input ranges:")
+        print("x range:", x.min().item(), "to", x.max().item())
+        print("x_hat range:", x_hat.min().item(), "to", x_hat.max().item())
+        print("Input types:")
+        print("x dtype:", x.dtype)
+        print("x_hat dtype:", x_hat.dtype)
 
-        # print("SEVA VAE::training_step::x_hat.shape: ", x_hat.shape)
-        # print("minmax: ", x_hat.min(), x_hat.max())
+        print("x device: ", x.device)
+        print("x_hat device: ", x_hat.device)
 
-        # Reconstruction loss (SSIM)
-        loss = torchmetrics.image.StructuralSimilarityIndexMeasure(
-            data_range=1.0)(x_hat, x)
-        # loss = torchmetrics.image.lpip.LearnedPerceptualImagePatchSimilarity(
-        #     data_range=1.0)(x_hat, x)
-        
+        # force x_hat to the range [-1, 1]
+        x_hat = torch.clamp(x_hat, -1.0, 1.0)
+
+        try:
+            loss = self.loss_fn(x_hat, x)
+            print("Loss computed successfully:", loss.item())
+        except Exception as e:
+            print("Error computing loss:", str(e))
+            raise e
+
         self.log("train_loss", loss)
         return loss
     
     def validation_step(self, batch: torch.Tensor, batch_idx: int) -> None:
-        x = batch
+        x = self.get_input(batch)
         x_hat = self(x)
-        loss = torchmetrics.image.StructuralSimilarityIndexMeasure(
-            data_range=1.0)(x_hat, x)
+        loss = self.loss_fn(x_hat, x)
+        # loss = torchmetrics.image.StructuralSimilarityIndexMeasure(
+        #     data_range=1.0)(x_hat, x)
         # loss = torchmetrics.image.lpip.LearnedPerceptualImagePatchSimilarity(
         #     data_range=1.0)(x_hat, x)
         self.log("val_loss", loss)
     
     def test_step(self, batch: torch.Tensor, batch_idx: int) -> None:
-        x = batch
+        x = self.get_input(batch)
         x_hat = self(x)
-        loss = torchmetrics.image.StructuralSimilarityIndexMeasure(
-            data_range=1.0)(x_hat, x)
+        loss = self.loss_fn(x_hat, x)
+        # loss = torchmetrics.image.StructuralSimilarityIndexMeasure(
+        #     data_range=1.0)(x_hat, x)
         # loss = torchmetrics.image.lpip.LearnedPerceptualImagePatchSimilarity(
         #     data_range=1.0)(x_hat, x)
         self.log("val_loss", loss)

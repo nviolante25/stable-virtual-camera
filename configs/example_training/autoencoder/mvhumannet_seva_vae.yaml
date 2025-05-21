@@ -1,12 +1,13 @@
 model: # define model
-  base_learning_rate: 1e-5 # want this in 'model:'
+  base_learning_rate: 1.0e-5 # want this in 'model:'
   target: seva.modules.autoencoder.LightningAutoEncoder
   params: # with all its params
     model:
       # target to instantiate object
       target: seva.modules.autoencoder.AutoEncoder
-      params:
-        chunk_size: 1
+      # params:
+      #   chunk_size: None
+    learning_rate: 1.0e-5
 
 # data: # load data from .py
 #   target: seva.data.mvh_dataloader.MVHumanNetLoader
@@ -20,8 +21,9 @@ model: # define model
 data:
   target: sgm.data.mnist.MNISTLoader
   params:
-    batch_size: 512
+    batch_size: 256
     num_workers: 1
+    prefetch_factor: 1
     seva_local: True
 
 lightning:

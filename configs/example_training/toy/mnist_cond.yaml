@@ -66,6 +66,7 @@ data:
   params:
     batch_size: 512
     num_workers: 12
+    prefetch_factor: 1
 
 lightning:
   modelcheckpoint:

@@ -287,6 +287,7 @@ class MVHumanNetLoader(pl.LightningDataModule):
         ])
 
     def setup(self, stage: Optional[str] = None):
+        print("MVHumanNetLoader::setup::stage: ", stage)
         if stage == "fit" or stage is None:
             self.train_dataset = MVHumanNetDataDictWrapper(
                 MVHumanNetDataset(
