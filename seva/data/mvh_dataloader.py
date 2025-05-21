@@ -13,7 +13,7 @@ from scipy.stats import multivariate_normal
 from PIL import Image
 import torchvision.transforms.v2 as T
 import pytorch_lightning as pl
-from preprocessing import (
+from seva.data.preprocessing import (
     update_intrinsics,
     get_bbox_center_and_size,
     get_mvhumannet_extrinsics,
@@ -271,7 +271,7 @@ class MVHumanNetLoader(pl.LightningDataModule):
         batch_size: int,
         num_workers: int = 0,
         shuffle: bool = True,
-        image_size: int = 256
+        image_size: int = 576
     ):
         super().__init__()
         
@@ -281,34 +281,35 @@ class MVHumanNetLoader(pl.LightningDataModule):
         self.shuffle = shuffle
         
         # Define transforms
-        self.transform = transforms.Compose([
-            transforms.Resize(image_size),
-            transforms.CenterCrop(image_size),
-            transforms.ToTensor(),
-            transforms.Lambda(lambda x: x * 2.0 - 1.0)  # Scale to [-1, 1]
+        self.transform = T.Compose([
+            T.Resize(image_size), # whatever final resolution we want here
+            T.ToTensor(),
         ])
 
     def setup(self, stage: Optional[str] = None):
         if stage == "fit" or stage is None:
             self.train_dataset = MVHumanNetDataDictWrapper(
                 MVHumanNetDataset(
-                    root_dir=os.path.join(self.root_dir, "train"),
-                    transform=self.transform
+                    root_dir=os.path.join(self.root_dir),
+                    transforms=self.transform
                 )
             )
-            self.val_dataset = MVHumanNetDataDictWrapper(
-                MVHumanNetDataset(
-                    root_dir=os.path.join(self.root_dir, "val"),
-                    transform=self.transform
-                )
-            )
+            # self.val_dataset = MVHumanNetDataDictWrapper(
+            #     MVHumanNetDataset(
+            #         root_dir=os.path.join(self.root_dir, "val"),
+            #         transforms=self.transform
+            #     )
+            # )
         if stage == "test" or stage is None:
             self.test_dataset = MVHumanNetDataDictWrapper(
                 MVHumanNetDataset(
                     root_dir=os.path.join(self.root_dir, "test"),
-                    transform=self.transform
+                    transforms=self.transform
                 )
             )
+
+    def prepare_data(self):
+        pass
 
     def train_dataloader(self) -> DataLoader:
         return DataLoader(
