@@ -4,3 +4,5 @@ webdataset
 transformers
 omegaconf
 natsort
+matplotlib
+xformers==v0.0.29.post3
