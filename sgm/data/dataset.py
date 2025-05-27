@@ -106,6 +106,7 @@ class StableDataModuleFromConfig(LightningDataModule):
 
 
 def center_cameras(all_c2ws, c2ws):
+    # finds mean position of all_c2ws, then centers cameras by subtracting the mean
     ref_c2ws = all_c2ws
     camera_dist_2med = torch.norm(
         ref_c2ws[:, :3, 3] - ref_c2ws[:, :3, 3].median(0, keepdim=True).values,
@@ -143,6 +144,15 @@ class DL3DVDataset(Dataset):
         self.scenes = self._load_scenes()
         self.adjacent_frame_sampling_prob = 0.2
 
+        print("=" * 30)
+        print("\n \n")
+        print("\n dataset_dir:\n", dataset_dir)
+        print("\n colmap_dir:\n", colmap_dir)
+        print("\n levels:\n", levels)
+        print("\n num_images:\n", num_images)
+        print("\n \n")
+        print("=" * 30)
+        
         if "480P" in dataset_dir:
             self.image_shape = (270, 480)
             self.images_folder = "images_8"
@@ -186,11 +196,14 @@ class DL3DVDataset(Dataset):
             self.colmap_dir, os.path.relpath(scene_path, self.dataset_dir), "colmap", "sparse", "0"
         )
         cameras_metas, images_metas, _ = read_model(colmap_scene_path)
+        print("\ncameras_metas(pre):\n", type(cameras_metas) ,cameras_metas)
         images_metas = list(sorted(images_metas.values(), key=lambda x: x.name))
-
+        print("\ncamera_metas:\n", type(cameras_metas) ,cameras_metas)
+        print("\nimages_metas:\n", type(images_metas) ,images_metas)
         # Load images files
         images_dir = os.path.join(scene_path, self.images_folder)
         images_files = [os.path.join(images_dir, image.name) for image in images_metas]
+        print("\nimages_files:\n", type(images_files) ,images_files)
 
         # Sample frames indices
         if np.random.rand() <= self.adjacent_frame_sampling_prob:
@@ -210,6 +223,7 @@ class DL3DVDataset(Dataset):
             clean_latents = torch.stack([torch.load(os.path.join(latents_dir, latents_files[i])) for i in range(len(latents_files))])
 
         # Load frames   
+        # (T,3,H,W)
         frames = torch.zeros((self.num_images, 3, self.target_shape[0],  self.target_shape[1]))
         for i, img_file in enumerate(images_files):
             img_path = os.path.join(images_dir, img_file)
@@ -310,6 +324,7 @@ class DL3DVDataModuleFromConfig(LightningDataModule):
             colmap_dir,
             latents_dir=latents_dir,
             num_images=num_images,
+            levels=["1K"],
         )
 
     def prepare_data(self):
