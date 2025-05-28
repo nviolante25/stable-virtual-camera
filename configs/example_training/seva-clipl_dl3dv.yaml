@@ -44,6 +44,7 @@ model:
           dense_in_channels: 6
           dropout: 0.0
           unflatten_names: ["middle_ds8", "output_ds4", "output_ds2"]
+          ckpt_path: null
 
     conditioner_config:
       target: sgm.modules.GeneralConditioner
@@ -108,10 +109,10 @@ model:
 data:
   target: sgm.data.dataset.DL3DVDataModuleFromConfig
   params:
-    dataset_dir: you/path/DL3DV-ALL-480P
-    colmap_dir: you/path/DL3DV-ALL-ColmapCache
+    dataset_dir: /workspace/leovol/dl3dv-480P
+    colmap_dir: /workspace/leovol/dl3dv-colmap
     batch_size: 1
-    num_workers: 48
+    num_workers: 2
 
 lightning:
   modelcheckpoint:

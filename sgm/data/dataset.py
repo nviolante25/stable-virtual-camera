@@ -13,6 +13,7 @@ import numpy as np
 
 
 from seva.geometry import get_plucker_coordinates
+from seva.modules.autoencoder import AutoEncoder
 from sgm.data.read_write_model import read_model
 from sgm.data.utils_camera import (
     read_intrinsics_colmap,
@@ -41,6 +42,7 @@ from torchvision import transforms
 #     print("#" * 100)
 #     exit(1)
 
+# _worker_ae = None
 
 class StableDataModuleFromConfig(LightningDataModule):
     def __init__(
@@ -133,6 +135,12 @@ def scale_cameras(c2ws, camera_scale=2.0):
     c2ws[:, :3, 3] *= translation_scaling_factor
 
 
+# def worker_init_fn(worker_id):
+#     global _worker_ae
+#     if _worker_ae is None:
+#         _worker_ae = AutoEncoder().eval()
+#         # _worker_ae = AutoEncoder().eval().cuda()
+
 class DL3DVDataset(Dataset):
     def __init__(self, dataset_dir, colmap_dir, num_images, latents_dir=None, transform=None, levels=None):
         self.dataset_dir = dataset_dir
@@ -170,7 +178,10 @@ class DL3DVDataset(Dataset):
 
         # Values fro SD 2.1 autoencoder
         self.donwsample_factor = 8
-        self.scale_factor = 0.18215
+        self.scale_factor = 0.18215              
+        self.latent_shape = (self.num_images, 4, self.target_shape[0] // self.donwsample_factor, 
+                          self.target_shape[1] // self.donwsample_factor)
+
 
     def _load_scenes(self):
         scenes = []
@@ -196,20 +207,25 @@ class DL3DVDataset(Dataset):
             self.colmap_dir, os.path.relpath(scene_path, self.dataset_dir), "colmap", "sparse", "0"
         )
         cameras_metas, images_metas, _ = read_model(colmap_scene_path)
-        print("\ncameras_metas(pre):\n", type(cameras_metas) ,cameras_metas)
+        # below are defined in 'read_write_model.py'
+        # camera_metas is a dict {1: intrinsics} based on the camera used to take them
+        # ex. Camera(id=1, model="OPENCV", w, h, params=8 element array)
+        # images_metas is a dict {1...num_images, sequential but varying, & values are of:
+        # Image(id=1, qvec=np.array, tvec=np.array, camera_id=1, name, xys, point3D_ids=array([], dtype=int32))
+
         images_metas = list(sorted(images_metas.values(), key=lambda x: x.name))
-        print("\ncamera_metas:\n", type(cameras_metas) ,cameras_metas)
-        print("\nimages_metas:\n", type(images_metas) ,images_metas)
+
         # Load images files
         images_dir = os.path.join(scene_path, self.images_folder)
         images_files = [os.path.join(images_dir, image.name) for image in images_metas]
-        print("\nimages_files:\n", type(images_files) ,images_files)
+        # ex. images_8/frame_00001.png
+        # should be able to use transforms.json instead of using this
 
         # Sample frames indices
-        if np.random.rand() <= self.adjacent_frame_sampling_prob:
+        if np.random.rand() <= self.adjacent_frame_sampling_prob: # for trajectory NVS
             start_idx = np.random.randint(0, len(images_files) - self.num_images)
             images_idxs = np.arange(start_idx, start_idx + self.num_images)
-        else:
+        else: # for set NVS
             images_idxs = np.random.choice(len(images_files), self.num_images, replace=False)
 
         images_files = [images_files[i] for i in images_idxs]
@@ -222,32 +238,43 @@ class DL3DVDataset(Dataset):
             latents_files = [latents_files[i] for i in images_idxs]
             clean_latents = torch.stack([torch.load(os.path.join(latents_dir, latents_files[i])) for i in range(len(latents_files))])
 
-        # Load frames   
+        # Load frames from image paths
         # (T,3,H,W)
         frames = torch.zeros((self.num_images, 3, self.target_shape[0],  self.target_shape[1]))
         for i, img_file in enumerate(images_files):
             img_path = os.path.join(images_dir, img_file)
             image = Image.open(img_path).convert("RGB")
-            image = self.transform(image)
+            image = self.transform(image) # images converted to square, [-1, 1] normalization
             frames[i] = image
+
+        print("frames(shape): ", frames.shape)
+        print("frames(device): ", frames.device)
         
         # Read extrinsics from COLMAP
+        # takes in tvec and qvec to return homogeneous c2w matrix
         all_c2ws = np.array([read_extrinsics_colmap(image_meta, mode="c2w") for image_meta in images_metas])
         all_c2ws = torch.from_numpy(all_c2ws).float()
-        c2ws = all_c2ws[images_idxs]
-        center_cameras(all_c2ws, c2ws)
+        c2ws = all_c2ws[images_idxs] # choose sampled ones only
+        center_cameras(all_c2ws, c2ws) # mean center
         scale_cameras(c2ws)
         
         # Read intrinsics from COLMAP
+        # key of camera: 1
         intrinsics = read_intrinsics_colmap(cameras_metas[1], normalize=True)
+        # CURRENTLY, assumes all images have same intrinsics/taken with same camera
+        # TODO: accept multiple camera intrinsics
         Ks = repeat(intrinsics, 'd1 d2 -> n d1 d2', n=self.num_images)
         Ks = torch.from_numpy(Ks).float()
+        print("num images: ", self.num_images)
+        print("Ks(shape): ", Ks.shape)
 
         # Sample input and target frames
         num_input_frames = np.random.randint(1, self.num_images)  # Randomly select number of input frames
         input_frames_indices = np.random.choice(self.num_images, num_input_frames, replace=False) # Randomly select the input frames
+        # num_input_frames: choose between 1 and max image frames
+        # input_frames_indices: indices to make input frames
 
-        # Create masks
+        # Create masks (for above 1: inputs/ 0: targets)
         input_frames_mask = torch.zeros(self.num_images, dtype=torch.bool)
         input_frames_mask[input_frames_indices] = True
 
@@ -262,6 +289,8 @@ class DL3DVDataset(Dataset):
                          self.target_shape[1] // self.donwsample_factor),
         )
 
+        print("pluckers(shape): ", pluckers.shape)
+
         concat = torch.cat( # binary mask and plcukers
             [
                 repeat(
@@ -273,7 +302,23 @@ class DL3DVDataset(Dataset):
                 pluckers,
             ],
             dim=1,
-        )
+        ) # (T, 6 + 1, 72, 72), where 6 is for plucker coords and 1 for binary mask
+
+        print("concat(shape): ", concat.shape)
+
+
+        latent_shape = (self.num_images, 4, self.target_shape[0] // self.donwsample_factor, 
+                        self.target_shape[1] // self.donwsample_factor)
+        clean_latents = torch.zeros(latent_shape)
+
+        # NOTE: instead of using on-the-fly encoding,
+        # use precomptued latents from latent_dir
+        # with torch.no_grad():
+        #     input_frames = frames[input_frames_indices]
+        #     temp = self.ae.encode(input_frames_to_encode)  # AutoEncoder will handle device placement
+        #     clean_latents[input_frames_indices] = temp
+
+        print("clean_latents(shape): ", clean_latents.shape)
 
         replace = torch.cat( # clean latents and binary mask
             [
@@ -287,6 +332,8 @@ class DL3DVDataset(Dataset):
             ],
             dim=1,
         )
+        
+        print("replace(shape): ", replace.shape)
 
         output_dict = {
             "clean_latent": clean_latents,
@@ -298,6 +345,9 @@ class DL3DVDataset(Dataset):
             "replace": replace,
         }
 
+        for key, value in output_dict.items():
+            print(f"{key}: {value.shape}")
+
         return output_dict
 
 
@@ -308,7 +358,7 @@ class DL3DVDataModuleFromConfig(LightningDataModule):
             colmap_dir, 
             batch_size, 
             latents_dir=None,
-            num_workers=0, 
+            num_workers=0,
             num_images=21,
             shuffle=True):
         super().__init__()
@@ -319,6 +369,7 @@ class DL3DVDataModuleFromConfig(LightningDataModule):
         self.batch_size = batch_size
         self.num_workers = num_workers
         self.shuffle = shuffle
+
         self.train_dataset = DL3DVDataset(
             dataset_dir,
             colmap_dir,
@@ -330,10 +381,54 @@ class DL3DVDataModuleFromConfig(LightningDataModule):
     def prepare_data(self):
         pass
 
+    # def _collate_fn(self, batch):
+    #     # batch dict from __getitem__
+    #     # ['clean_latent', 'mask', 'plucker', 'camera_mask', 'concat', 'frames', 'replace']
+    #     # collate first
+    #     print("\nin collate!\n")
+    #     collated = {}
+    #     for key in batch[0].keys():
+    #         if isinstance(batch[0][key], torch.Tensor):
+    #             collated[key] = torch.stack([b[key] for b in batch])
+    #         else:
+    #             collated[key] = [b[key] for b in batch]
+    #     print("collated.keys(): ", collated.keys())
+    #     for key, value in collated.items():
+    #         if isinstance(value, torch.Tensor):
+    #             print(f"collated[{key}].shape: {value.shape}")
+    #         else:
+    #             print(f"collated[{key}] is not a tensor, length: {len(value)}")
+
+    #     # If we need to compute latents
+    #     global _worker_ae
+    #     if _worker_ae is not None and 'frames' in collated:
+    #         with torch.no_grad():
+    #             # Get all input frames that need encoding
+    #             input_frames = collated['frames'][collated['mask']]
+                
+    #             # move to GPU for compute
+    #             # input_frames = input_frames.to(torch.device('cuda'))
+    #             encoded = _worker_ae.encode(input_frames)
+    #             # encoded = encoded.cpu()
+
+    #             # Place encoded latents back in the correct positions
+    #             collated['clean_latent'][collated['mask']] = encoded
+
+    #     print("\n collate done!\n")
+
+    #     return collated
+
     def train_dataloader(self):
+        print("\nin train_dataloader!\n")
         return DataLoader(
             self.train_dataset,
             batch_size=self.batch_size,
             shuffle=self.shuffle,
             num_workers=self.num_workers,
+            # multiprocessing_context='spawn',
+            # persistent_workers=True,
+            # worker_init_fn=self.worker_init_fn,
+            # collate_fn=self._collate_fn
         )
+
+
