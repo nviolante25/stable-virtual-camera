@@ -51,7 +51,8 @@ def is_power_of_two(n):
 
 def autocast(f, enabled=True):
     def do_autocast(*args, **kwargs):
-        with torch.cuda.amp.autocast(
+        with torch.amp.autocast(
+            'cuda',
             enabled=enabled,
             dtype=torch.get_autocast_gpu_dtype(),
             cache_enabled=torch.is_autocast_cache_enabled(),
