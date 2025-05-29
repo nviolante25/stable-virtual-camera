@@ -238,6 +238,8 @@ class DL3DVDataset(Dataset):
             latents_files = [latents_files[i] for i in images_idxs]
             clean_latents = torch.stack([torch.load(os.path.join(latents_dir, latents_files[i])) for i in range(len(latents_files))])
 
+        # print("clean_latents(shape): ", clean_latents.shape)
+
         # Load frames from image paths
         # (T,3,H,W)
         frames = torch.zeros((self.num_images, 3, self.target_shape[0],  self.target_shape[1]))
@@ -247,9 +249,6 @@ class DL3DVDataset(Dataset):
             image = self.transform(image) # images converted to square, [-1, 1] normalization
             frames[i] = image
 
-        print("frames(shape): ", frames.shape)
-        print("frames(device): ", frames.device)
-        
         # Read extrinsics from COLMAP
         # takes in tvec and qvec to return homogeneous c2w matrix
         all_c2ws = np.array([read_extrinsics_colmap(image_meta, mode="c2w") for image_meta in images_metas])
@@ -265,8 +264,6 @@ class DL3DVDataset(Dataset):
         # TODO: accept multiple camera intrinsics
         Ks = repeat(intrinsics, 'd1 d2 -> n d1 d2', n=self.num_images)
         Ks = torch.from_numpy(Ks).float()
-        print("num images: ", self.num_images)
-        print("Ks(shape): ", Ks.shape)
 
         # Sample input and target frames
         num_input_frames = np.random.randint(1, self.num_images)  # Randomly select number of input frames
@@ -289,8 +286,6 @@ class DL3DVDataset(Dataset):
                          self.target_shape[1] // self.donwsample_factor),
         )
 
-        print("pluckers(shape): ", pluckers.shape)
-
         concat = torch.cat( # binary mask and plcukers
             [
                 repeat(
@@ -304,8 +299,6 @@ class DL3DVDataset(Dataset):
             dim=1,
         ) # (T, 6 + 1, 72, 72), where 6 is for plucker coords and 1 for binary mask
 
-        print("concat(shape): ", concat.shape)
-
 
         latent_shape = (self.num_images, 4, self.target_shape[0] // self.donwsample_factor, 
                         self.target_shape[1] // self.donwsample_factor)
@@ -317,8 +310,6 @@ class DL3DVDataset(Dataset):
         #     input_frames = frames[input_frames_indices]
         #     temp = self.ae.encode(input_frames_to_encode)  # AutoEncoder will handle device placement
         #     clean_latents[input_frames_indices] = temp
-
-        print("clean_latents(shape): ", clean_latents.shape)
 
         replace = torch.cat( # clean latents and binary mask
             [
@@ -332,21 +323,28 @@ class DL3DVDataset(Dataset):
             ],
             dim=1,
         )
-        
-        print("replace(shape): ", replace.shape)
 
-        output_dict = {
-            "clean_latent": clean_latents,
-            "mask": input_frames_mask,
-            "plucker": pluckers,
-            "camera_mask": camera_mask,
-            "concat": concat,
-            "frames": frames,
-            "replace": replace,
-        }
+        print("Before output_dict creation")
+        try:
+            output_dict = {
+                "clean_latent": clean_latents,
+                "mask": input_frames_mask,
+                "plucker": pluckers,
+                "camera_mask": camera_mask,
+                "concat": concat,
+                "frames": frames,
+                "replace": replace,
+            }
+            print("After output_dict creation")
+        except Exception as e:
+            print(f"Error creating output_dict: {e}")
+            raise
 
+        print("Before printing shapes", flush=True)
         for key, value in output_dict.items():
-            print(f"{key}: {value.shape}")
+            print(f"Printing shape for {key}", flush=True)
+            print(f"{key}: {value.shape}", flush=True)
+        print("After printing shapes", flush=True)
 
         return output_dict
 
@@ -381,42 +379,42 @@ class DL3DVDataModuleFromConfig(LightningDataModule):
     def prepare_data(self):
         pass
 
-    # def _collate_fn(self, batch):
-    #     # batch dict from __getitem__
-    #     # ['clean_latent', 'mask', 'plucker', 'camera_mask', 'concat', 'frames', 'replace']
-    #     # collate first
-    #     print("\nin collate!\n")
-    #     collated = {}
-    #     for key in batch[0].keys():
-    #         if isinstance(batch[0][key], torch.Tensor):
-    #             collated[key] = torch.stack([b[key] for b in batch])
-    #         else:
-    #             collated[key] = [b[key] for b in batch]
-    #     print("collated.keys(): ", collated.keys())
-    #     for key, value in collated.items():
-    #         if isinstance(value, torch.Tensor):
-    #             print(f"collated[{key}].shape: {value.shape}")
-    #         else:
-    #             print(f"collated[{key}] is not a tensor, length: {len(value)}")
+    def _collate_fn(self, batch):
+        # batch dict from __getitem__
+        # ['clean_latent', 'mask', 'plucker', 'camera_mask', 'concat', 'frames', 'replace']
+        # collate first
+        print("\nin collate!\n")
+        collated = {}
+        for key in batch[0].keys():
+            if isinstance(batch[0][key], torch.Tensor):
+                collated[key] = torch.stack([b[key] for b in batch])
+            else:
+                collated[key] = [b[key] for b in batch]
+        print("collated.keys(): ", collated.keys())
+        for key, value in collated.items():
+            if isinstance(value, torch.Tensor):
+                print(f"collated[{key}].shape: {value.shape}")
+            else:
+                print(f"collated[{key}] is not a tensor, length: {len(value)}")
 
-    #     # If we need to compute latents
-    #     global _worker_ae
-    #     if _worker_ae is not None and 'frames' in collated:
-    #         with torch.no_grad():
-    #             # Get all input frames that need encoding
-    #             input_frames = collated['frames'][collated['mask']]
+        # If we need to compute latents
+        # global _worker_ae
+        # if _worker_ae is not None and 'frames' in collated:
+        #     with torch.no_grad():
+        #         # Get all input frames that need encoding
+        #         input_frames = collated['frames'][collated['mask']]
                 
-    #             # move to GPU for compute
-    #             # input_frames = input_frames.to(torch.device('cuda'))
-    #             encoded = _worker_ae.encode(input_frames)
-    #             # encoded = encoded.cpu()
+        #         # move to GPU for compute
+        #         # input_frames = input_frames.to(torch.device('cuda'))
+        #         encoded = _worker_ae.encode(input_frames)
+        #         # encoded = encoded.cpu()
 
-    #             # Place encoded latents back in the correct positions
-    #             collated['clean_latent'][collated['mask']] = encoded
+        #         # Place encoded latents back in the correct positions
+        #         collated['clean_latent'][collated['mask']] = encoded
 
-    #     print("\n collate done!\n")
+        print("\n collate done!\n")
 
-    #     return collated
+        return collated
 
     def train_dataloader(self):
         print("\nin train_dataloader!\n")
@@ -428,7 +426,7 @@ class DL3DVDataModuleFromConfig(LightningDataModule):
             # multiprocessing_context='spawn',
             # persistent_workers=True,
             # worker_init_fn=self.worker_init_fn,
-            # collate_fn=self._collate_fn
+            collate_fn=self._collate_fn
         )
 
 
