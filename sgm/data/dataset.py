@@ -340,11 +340,11 @@ class DL3DVDataset(Dataset):
             print(f"Error creating output_dict: {e}")
             raise
 
-        print("Before printing shapes", flush=True)
-        for key, value in output_dict.items():
-            print(f"Printing shape for {key}", flush=True)
-            print(f"{key}: {value.shape}", flush=True)
-        print("After printing shapes", flush=True)
+        # print("Before printing shapes", flush=True)
+        # for key, value in output_dict.items():
+        #     print(f"Printing shape for {key}", flush=True)
+        #     print(f"{key}: {value.shape}", flush=True)
+        # print("After printing shapes", flush=True)
 
         return output_dict
 
@@ -379,42 +379,42 @@ class DL3DVDataModuleFromConfig(LightningDataModule):
     def prepare_data(self):
         pass
 
-    def _collate_fn(self, batch):
-        # batch dict from __getitem__
-        # ['clean_latent', 'mask', 'plucker', 'camera_mask', 'concat', 'frames', 'replace']
-        # collate first
-        print("\nin collate!\n")
-        collated = {}
-        for key in batch[0].keys():
-            if isinstance(batch[0][key], torch.Tensor):
-                collated[key] = torch.stack([b[key] for b in batch])
-            else:
-                collated[key] = [b[key] for b in batch]
-        print("collated.keys(): ", collated.keys())
-        for key, value in collated.items():
-            if isinstance(value, torch.Tensor):
-                print(f"collated[{key}].shape: {value.shape}")
-            else:
-                print(f"collated[{key}] is not a tensor, length: {len(value)}")
+    # def _collate_fn(self, batch):
+    #     # batch dict from __getitem__
+    #     # ['clean_latent', 'mask', 'plucker', 'camera_mask', 'concat', 'frames', 'replace']
+    #     # collate first
+    #     print("\nin collate!\n")
+    #     collated = {}
+    #     for key in batch[0].keys():
+    #         if isinstance(batch[0][key], torch.Tensor):
+    #             collated[key] = torch.stack([b[key] for b in batch])
+    #         else:
+    #             collated[key] = [b[key] for b in batch]
+    #     print("collated.keys(): ", collated.keys())
+    #     for key, value in collated.items():
+    #         if isinstance(value, torch.Tensor):
+    #             print(f"collated[{key}].shape: {value.shape}")
+    #         else:
+    #             print(f"collated[{key}] is not a tensor, length: {len(value)}")
 
-        # If we need to compute latents
-        # global _worker_ae
-        # if _worker_ae is not None and 'frames' in collated:
-        #     with torch.no_grad():
-        #         # Get all input frames that need encoding
-        #         input_frames = collated['frames'][collated['mask']]
+    #     # If we need to compute latents
+    #     # global _worker_ae
+    #     # if _worker_ae is not None and 'frames' in collated:
+    #     #     with torch.no_grad():
+    #     #         # Get all input frames that need encoding
+    #     #         input_frames = collated['frames'][collated['mask']]
                 
-        #         # move to GPU for compute
-        #         # input_frames = input_frames.to(torch.device('cuda'))
-        #         encoded = _worker_ae.encode(input_frames)
-        #         # encoded = encoded.cpu()
+    #     #         # move to GPU for compute
+    #     #         # input_frames = input_frames.to(torch.device('cuda'))
+    #     #         encoded = _worker_ae.encode(input_frames)
+    #     #         # encoded = encoded.cpu()
 
-        #         # Place encoded latents back in the correct positions
-        #         collated['clean_latent'][collated['mask']] = encoded
+    #     #         # Place encoded latents back in the correct positions
+    #     #         collated['clean_latent'][collated['mask']] = encoded
 
-        print("\n collate done!\n")
+    #     print("\n collate done!\n")
 
-        return collated
+    #     return collated
 
     def train_dataloader(self):
         print("\nin train_dataloader!\n")
@@ -426,7 +426,7 @@ class DL3DVDataModuleFromConfig(LightningDataModule):
             # multiprocessing_context='spawn',
             # persistent_workers=True,
             # worker_init_fn=self.worker_init_fn,
-            collate_fn=self._collate_fn
+            # collate_fn=self._collate_fn
         )
 
 
