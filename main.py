@@ -839,14 +839,6 @@ if __name__ == "__main__":
         # lightning still takes care of proper multiprocessing though
         data.prepare_data()
         # data.setup()
-        print("#### Data #####")
-        try:
-            for k in data.datasets:
-                print(
-                    f"{k}, {data.datasets[k].__class__.__name__}, {len(data.datasets[k])}"
-                )
-        except:
-            print("datasets not yet initialized.")
 
         # configure learning rate
         if "batch_size" in config.data.params:
