@@ -39,11 +39,16 @@ class SevaLoRAWrapper(nn.Module):
         # (excludes the LoRA-transformed MultiviewTransformer's attn1 block in the 9th element of output_blocks)
         # can exclude an entire block by passing in the block's name (e.g. "output_blocks.9", "input_blocks", etc.)
 
+        # freeze seva modules
+        for param in self.seva_model.parameters():
+            param.requires_grad = False
+
         if target_modules is None:
             # only attention-based layers by default (can extend to 'ff' if needed)
             target_modules = {"TransformerBlockTimeMix", "MultiviewTransformer", "TransformerBlock"}
 
         # Replace attention layers with LoRA versions
+        # NOTE: in lora.py, the original matrices are already frozen
         self._replace_attention_with_lora(
             self.seva_model, 
             target_modules, 

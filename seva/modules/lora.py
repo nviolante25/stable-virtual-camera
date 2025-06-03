@@ -56,6 +56,16 @@ class LoRAAttention(nn.Module):
         self.to_out = nn.Sequential(
             nn.Linear(inner_dim, query_dim), nn.Dropout(dropout)
         )
+        
+        # Freeze original attention layers
+        for param in self.to_q.parameters():
+            param.requires_grad = False
+        for param in self.to_k.parameters():
+            param.requires_grad = False
+        for param in self.to_v.parameters():
+            param.requires_grad = False
+        for param in self.to_out.parameters():
+            param.requires_grad = False
 
         # LoRA layers
         if "q" in keys_to_lora:
