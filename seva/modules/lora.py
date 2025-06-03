@@ -3,6 +3,9 @@ import torch.nn as nn
 import torch.nn.functional as F
 from typing import Optional
 import math
+from einops import rearrange, repeat
+from torch.nn.attention import SDPBackend, sdpa_kernel
+
 
 class LoRALinear(nn.Module):
     def __init__(
@@ -46,6 +49,7 @@ class LoRAAttention(nn.Module):
         super().__init__()
         self.heads = heads
         self.dim_head = dim_head
+        self.keys_to_lora = keys_to_lora
         inner_dim = dim_head * heads
         context_dim = context_dim or query_dim
 
@@ -68,23 +72,23 @@ class LoRAAttention(nn.Module):
             param.requires_grad = False
 
         # LoRA layers
-        if "q" in keys_to_lora:
+        if "q" in self.keys_to_lora:
             self.lora_q = LoRALinear(query_dim, inner_dim, rank=rank, alpha=alpha, dropout=dropout)
-        if "k" in keys_to_lora:
+        if "k" in self.keys_to_lora:
             self.lora_k = LoRALinear(context_dim, inner_dim, rank=rank, alpha=alpha, dropout=dropout)
-        if "v" in keys_to_lora:
+        if "v" in self.keys_to_lora:
             self.lora_v = LoRALinear(context_dim, inner_dim, rank=rank, alpha=alpha, dropout=dropout)
-        if "o" in keys_to_lora:
+        if "o" in self.keys_to_lora:
             self.lora_out = LoRALinear(inner_dim, query_dim, rank=rank, alpha=alpha, dropout=dropout)
 
     def forward(
         self, x: torch.Tensor, context: Optional[torch.Tensor] = None
     ) -> torch.Tensor:
         # Original projections
-        q = self.to_q(x) + self.lora_q(x) if "q" in keys_to_lora else self.to_q(x)
+        q = self.to_q(x) + self.lora_q(x) if "q" in self.keys_to_lora else self.to_q(x)
         context = context if context is not None else x
-        k = self.to_k(context) + self.lora_k(context) if "k" in keys_to_lora else self.to_k(context)
-        v = self.to_v(context) + self.lora_v(context) if "v" in keys_to_lora else self.to_v(context)
+        k = self.to_k(context) + self.lora_k(context) if "k" in self.keys_to_lora else self.to_k(context)
+        v = self.to_v(context) + self.lora_v(context) if "v" in self.keys_to_lora else self.to_v(context)
 
         # Convert to float16 for attention
         q = q.to(torch.float16)
@@ -101,7 +105,7 @@ class LoRAAttention(nn.Module):
         # Convert back to original dtype
         out = out.to(x.dtype)
         out = rearrange(out, "b h l d -> b l (h d)")
-        out = self.to_out(out) + self.lora_out(out) if "o" in keys_to_lora else self.to_out(out)
+        out = self.to_out(out) + self.lora_out(out) if "o" in self.keys_to_lora else self.to_out(out)
         return out
 
 # unused for now

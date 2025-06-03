@@ -3,6 +3,8 @@ import torch.nn as nn
 from typing import Optional, Dict, Any
 from .lora import LoRAAttention, LoRAFeedForward
 from ..model import Seva, SevaParams
+from sgm.util import instantiate_from_config
+
 
 def skip_module_if_excluded(module_path: str, excluded_modules: list[str]) -> bool:
     # Check if this module or any of its parents are in the excluded list
@@ -18,7 +20,7 @@ def skip_module_if_excluded(module_path: str, excluded_modules: list[str]) -> bo
 class SevaLoRAWrapper(nn.Module):
     def __init__(
         self,
-        seva_model: Seva,
+        seva_model_config: Dict[str, Any],
         self_attn_rank: int = 4,
         cross_attn_rank: int = 8,
         alpha: float = 4.0,
@@ -28,7 +30,7 @@ class SevaLoRAWrapper(nn.Module):
         excluded_modules: list[str] = [],
     ):
         super().__init__()
-        self.seva_model = seva_model
+        self.seva_model = instantiate_from_config(seva_model_config)
         self.self_attn_rank = self_attn_rank
         self.cross_attn_rank = cross_attn_rank
         self.alpha = alpha

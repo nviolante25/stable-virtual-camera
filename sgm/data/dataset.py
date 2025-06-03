@@ -324,7 +324,6 @@ class DL3DVDataset(Dataset):
             dim=1,
         )
 
-        print("Before output_dict creation")
         try:
             output_dict = {
                 "clean_latent": clean_latents,
@@ -335,7 +334,6 @@ class DL3DVDataset(Dataset):
                 "frames": frames,
                 "replace": replace,
             }
-            print("After output_dict creation")
         except Exception as e:
             print(f"Error creating output_dict: {e}")
             raise

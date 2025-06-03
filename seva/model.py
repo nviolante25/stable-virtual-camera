@@ -12,7 +12,7 @@ from seva.modules.layers import (
     timestep_embedding,
 )
 from seva.modules.transformer import MultiviewTransformer
-
+from typing import Union
 
 @dataclass
 class SevaParams(object):
@@ -180,14 +180,14 @@ class Seva(nn.Module):
             missing, unexpected = self.load_state_dict(state_dict, strict=False, assign=True)
             print_load_warning(missing, unexpected)
 
-        if freeze_layers:
-            print("layers of seva are FROZEN")
-            for param in self.input_blocks.parameters():
-                param.requires_grad = False
-            # for param in self.middle_block.parameters():
-            #     param.requires_grad = False
-            for param in self.output_blocks.parameters():
-                param.requires_grad = False
+        # if freeze_layers:
+        #     print("layers of seva are FROZEN")
+        #     for param in self.input_blocks.parameters():
+        #         param.requires_grad = False
+        #     for param in self.middle_block.parameters():
+        #         param.requires_grad = False
+        #     for param in self.output_blocks.parameters():
+        #         param.requires_grad = False
 
     def forward(
         self,
@@ -234,7 +234,7 @@ class Seva(nn.Module):
 
 # for compatibility with SGM
 class SGMWrapper(nn.Module):
-    def __init__(self, module: Seva):
+    def __init__(self, module: Seva): # or SevaLoRAWrappers
         super().__init__()
         self.module = module
 
