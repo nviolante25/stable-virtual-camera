@@ -232,6 +232,7 @@ class Seva(nn.Module):
         return self.out(h)
 
 
+# for compatibility with SGM
 class SGMWrapper(nn.Module):
     def __init__(self, module: Seva):
         super().__init__()
