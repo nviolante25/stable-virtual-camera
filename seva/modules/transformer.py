@@ -3,6 +3,7 @@ import torch.nn.functional as F
 from einops import rearrange, repeat
 from torch import nn
 from torch.nn.attention import SDPBackend, sdpa_kernel
+from torch.utils.checkpoint import checkpoint
 
 
 class GEGLU(nn.Module):
@@ -221,7 +222,7 @@ class MultiviewTransformer(nn.Module):
             ]
         )
 
-    def forward(
+    def _forward(
         self, x: torch.Tensor, context: torch.Tensor, num_frames: int
     ) -> torch.Tensor:
         assert context.ndim == 3
@@ -254,3 +255,13 @@ class MultiviewTransformer(nn.Module):
         x = rearrange(x, "b (h w) c -> b c h w", h=h, w=w)
         out = x + x_in
         return out
+
+    def forward(self, x: torch.Tensor, context: torch.Tensor, num_frames: int) -> torch.Tensor:
+        return checkpoint(
+            self._forward,
+            x,
+            context,
+            num_frames,
+            preserve_rng_state=False,
+            use_reentrant=False,
+        )

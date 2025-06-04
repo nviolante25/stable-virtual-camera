@@ -4,6 +4,7 @@ import torch
 import torch.nn.functional as F
 from einops import repeat
 from torch import nn
+from torch.utils.checkpoint import checkpoint
 
 from .transformer import MultiviewTransformer
 
@@ -117,7 +118,7 @@ class ResBlock(nn.Module):
         else:
             self.skip_connection = nn.Conv2d(channels, out_channels, 1, 1, 0)
 
-    def forward(
+    def _forward(
         self, x: torch.Tensor, emb: torch.Tensor, dense_emb: torch.Tensor
     ) -> torch.Tensor:
         in_rest, in_conv = self.in_layers[:-1], self.in_layers[-1]
@@ -137,3 +138,13 @@ class ResBlock(nn.Module):
         h = self.out_layers(h)
         h = self.skip_connection(x) + h
         return h
+    
+    def forward(self, x: torch.Tensor, emb: torch.Tensor, dense_emb: torch.Tensor) -> torch.Tensor:
+        return checkpoint(
+            self._forward,
+            x,
+            emb,
+            dense_emb,
+            preserve_rng_state=False,
+            use_reentrant=False,
+        )

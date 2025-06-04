@@ -29,6 +29,10 @@ class LoRALinear(nn.Module):
         # Initialize weights
         nn.init.kaiming_uniform_(self.lora_down.weight, a=math.sqrt(5))
         nn.init.zeros_(self.lora_up.weight)
+        
+        # Ensure LoRA parameters require gradients
+        self.lora_down.weight.requires_grad = True
+        self.lora_up.weight.requires_grad = True
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
         return self.lora_up(self.dropout(self.lora_down(x))) * self.scaling
