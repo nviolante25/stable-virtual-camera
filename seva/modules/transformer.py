@@ -186,12 +186,13 @@ class MultiviewTransformer(nn.Module):
         depth: int = 1,
         context_dim: int = 1024,
         dropout: float = 0.0,
+        training: bool = False,
     ):
         super().__init__()
         self.in_channels = in_channels
         self.name = name
         self.unflatten_names = unflatten_names
-
+        self.training = training
         inner_dim = n_heads * d_head
         self.norm = nn.GroupNorm(32, in_channels, eps=1e-6)
         self.proj_in = nn.Linear(in_channels, inner_dim)
@@ -257,11 +258,14 @@ class MultiviewTransformer(nn.Module):
         return out
 
     def forward(self, x: torch.Tensor, context: torch.Tensor, num_frames: int) -> torch.Tensor:
-        return checkpoint(
-            self._forward,
-            x,
-            context,
-            num_frames,
-            preserve_rng_state=False,
-            use_reentrant=False,
-        )
+        if self.training:
+            return checkpoint(
+                self._forward,
+                x,
+                context,
+                num_frames,
+                preserve_rng_state=False,
+                use_reentrant=False,
+            )
+        else:
+            return self._forward(x, context, num_frames)

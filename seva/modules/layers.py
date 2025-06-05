@@ -92,10 +92,11 @@ class ResBlock(nn.Module):
         out_channels: int | None,
         dense_in_channels: int,
         dropout: float,
+        training: bool = False,
     ):
         super().__init__()
         out_channels = out_channels or channels
-
+        self.training = training
         self.in_layers = nn.Sequential(
             GroupNorm32(32, channels),
             nn.SiLU(),
@@ -140,11 +141,14 @@ class ResBlock(nn.Module):
         return h
     
     def forward(self, x: torch.Tensor, emb: torch.Tensor, dense_emb: torch.Tensor) -> torch.Tensor:
-        return checkpoint(
-            self._forward,
-            x,
-            emb,
-            dense_emb,
-            preserve_rng_state=False,
-            use_reentrant=False,
-        )
+        if self.training:
+            return checkpoint(
+                self._forward,
+                x,
+                emb,
+                dense_emb,
+                preserve_rng_state=False,
+                use_reentrant=False,
+            )
+        else:
+            return self._forward(x, emb, dense_emb)
