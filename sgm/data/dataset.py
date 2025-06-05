@@ -300,9 +300,9 @@ class DL3DVDataset(Dataset):
         ) # (T, 6 + 1, 72, 72), where 6 is for plucker coords and 1 for binary mask
 
 
-        latent_shape = (self.num_images, 4, self.target_shape[0] // self.donwsample_factor, 
-                        self.target_shape[1] // self.donwsample_factor)
-        clean_latents = torch.zeros(latent_shape)
+        # latent_shape = (self.num_images, 4, self.target_shape[0] // self.donwsample_factor, 
+        #                 self.target_shape[1] // self.donwsample_factor)
+        # clean_latents = torch.zeros(latent_shape)
 
         # NOTE: instead of using on-the-fly encoding,
         # use precomptued latents from latent_dir
