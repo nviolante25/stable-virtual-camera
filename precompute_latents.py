@@ -87,15 +87,22 @@ preprocess = transforms.Compose([
 
 # MVHumanNet
 def process_and_save_latents(scene_path, target_scene_path):
+    print(f"\nProcessing scene: {scene_path}")
     os.makedirs(target_scene_path, exist_ok=True)
     
     # Create images_lr directory in target path
     target_images_dir = os.path.join(target_scene_path, "images_lr")
     os.makedirs(target_images_dir, exist_ok=True)
     
-    # Get all camera directories
-    camera_dirs = [d for d in os.listdir(scene_path) if os.path.isdir(os.path.join(scene_path, d)) and d.startswith('CC')]
-    batch_size = 32
+    # Get all camera directories from images_lr
+    images_lr_path = os.path.join(scene_path, "images_lr")
+    if not os.path.exists(images_lr_path):
+        print(f"No images_lr directory found in {scene_path}")
+        return
+        
+    camera_dirs = [d for d in os.listdir(images_lr_path) if os.path.isdir(os.path.join(images_lr_path, d)) and d.startswith('CC')]
+    print(f"Found camera directories: {camera_dirs}")
+    batch_size = 16
 
     for camera_dir in camera_dirs:
         # Create camera-specific directory in target
@@ -103,13 +110,15 @@ def process_and_save_latents(scene_path, target_scene_path):
         os.makedirs(target_camera_dir, exist_ok=True)
         
         # Get all images for this camera
-        camera_path = os.path.join(scene_path, camera_dir)
+        camera_path = os.path.join(images_lr_path, camera_dir)
+        print(f"Checking camera path: {camera_path}")
         image_names = [name for name in os.listdir(camera_path) if name.lower().endswith(('.png', '.jpg', '.jpeg'))]
+        print(f"Found {len(image_names)} images in {camera_dir}")
         
         # Sort images by frame number
         image_names.sort(key=lambda x: int(x.split('_')[0]))
 
-        # skip pre-computed latents
+        # Filter out existing latents if not overwriting
         if not args.overwrite:
             image_names = [name for name in image_names if not os.path.exists(
                 os.path.join(target_camera_dir, f"{name.split('_')[0]}_latent.pt")
@@ -120,6 +129,7 @@ def process_and_save_latents(scene_path, target_scene_path):
             print(f"Skipping {camera_dir} - all latents already exist")
             continue
 
+        print(f"Processing {len(image_names)} images in {camera_dir}")
         for i in range(0, len(image_names), batch_size):
             batch_names = image_names[i:i + batch_size]
             batch_images = []
@@ -127,12 +137,14 @@ def process_and_save_latents(scene_path, target_scene_path):
             # Load and preprocess images in the batch
             for image_name in batch_names:
                 image_path = os.path.join(camera_path, image_name)
+                print(f"Loading image: {image_path}")
                 image = Image.open(image_path).convert("RGB")
                 image_tensor = preprocess(image)
                 batch_images.append(image_tensor)
 
             # Stack images into a batch tensor
             batch_tensor = torch.stack(batch_images).cuda()
+            batch_tensor.requires_grad = False
 
             # Encode the batch to latents
             with torch.no_grad():
@@ -145,9 +157,16 @@ def process_and_save_latents(scene_path, target_scene_path):
                 frame_num = image_name.split('_')[0]
                 latent_path = os.path.join(target_camera_dir, f"{frame_num}_latent.pt")
                 torch.save(latents[j], latent_path)
+                print(f"Saved latent for {frame_num}")
+            
+            # Clear GPU memory after each batch
+            del batch_tensor, latents
+            torch.cuda.empty_cache()
 
 # Iterate through the dataset and process each subject
 i = 0
+print(f"Dataset directory: {DATASET_DIR}")
+print(f"Target directory: {TARGET_DIR}")
 for subject in tqdm(os.listdir(DATASET_DIR), desc="Processing subjects"):
     if args.max_subjects is not None and i >= args.max_subjects:
         break
@@ -155,6 +174,7 @@ for subject in tqdm(os.listdir(DATASET_DIR), desc="Processing subjects"):
 
     subject_path = os.path.join(DATASET_DIR, subject)
     if os.path.isdir(subject_path):
+        print(f"\nFound subject directory: {subject_path}")
         target_subject_path = os.path.join(TARGET_DIR, subject)
         process_and_save_latents(subject_path, target_subject_path)
 

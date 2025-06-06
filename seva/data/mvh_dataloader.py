@@ -2,9 +2,22 @@ import os
 import json
 import pickle
 import glob
-from typing import Tuple, Optional, Dict, Union, Callable
+from einops import rearrange, repeat 
 from tqdm import tqdm
+from typing import Tuple, Optional, Dict, Union, Callable
 
+from seva.geometry import get_plucker_coordinates
+from seva.modules.autoencoder import AutoEncoder
+from sgm.data.read_write_model import read_model
+from sgm.data.utils_camera import (
+    read_intrinsics_colmap,
+    read_extrinsics_colmap,
+    read_intrinsics_nerfstudio,
+    read_extrinsics_nerfstudio,
+    opencv_to_opengl,
+    colmap_to_nerfstudio,
+    nerfstudio_to_colmap
+)
 import numpy as np
 import torch
 from torch.utils.data import Dataset, DataLoader
@@ -15,6 +28,7 @@ import torchvision.transforms.v2 as T
 import pytorch_lightning as pl
 from seva.data.preprocessing import (
     update_intrinsics,
+    create_tranformation_matrix,
     get_bbox_center_and_size,
     get_mvhumannet_extrinsics,
     load_json,
@@ -308,12 +322,41 @@ BOTTOM_RUNG = [
 
 CAMERA_RUNGS = [TOP_RUNG, MIDDLE_RUNG, BOTTOM_RUNG]
 
+# borrowed from @dataset.py
+def center_cameras(all_c2ws, c2ws):
+    # finds mean position of all_c2ws, then centers cameras by subtracting the mean
+    ref_c2ws = all_c2ws
+    camera_dist_2med = torch.norm(
+        ref_c2ws[:, :3, 3] - ref_c2ws[:, :3, 3].median(0, keepdim=True).values,
+        dim=-1,
+    )
+    valid_mask = camera_dist_2med <= torch.clamp(
+        torch.quantile(camera_dist_2med, 0.97) * 10,
+        max=1e6,
+    )
+    c2ws[:, :3, 3] -= ref_c2ws[valid_mask, :3, 3].mean(0, keepdim=True)
+    
+
+def scale_cameras(c2ws, camera_scale=2.0):
+    camera_dists = c2ws[:, :3, 3].clone()
+    translation_scaling_factor = (
+        camera_scale
+        if torch.isclose(
+            torch.norm(camera_dists[0]),
+            torch.zeros(1),
+            atol=1e-5,
+        ).any()
+        else (camera_scale / torch.norm(camera_dists[0]))
+    )
+    c2ws[:, :3, 3] *= translation_scaling_factor
+
 
 # NOTE: NEW version -- more aligned with DL3DVDataModuleFromConfig
 class MVHumanNetDataset(Dataset):
     def __init__(
         self,
         root_dir,
+        num_images,
         latents_dir=None,
         transforms=None,
         pre_scale=0.5,
@@ -322,14 +365,32 @@ class MVHumanNetDataset(Dataset):
     ):
         self.root_dir = root_dir             # directory of all subject directories
         self.latents_dir = latents_dir       # directory of all latents
+        self.num_images = num_images         # context window T
         self.transforms = transforms         # transforms for the random crop
         self.pre_scale = pre_scale           # since MVHumanNet is downsampled, update intrinsics
         self.data_limit = data_limit # TEMP (int) -- just to limit number of subjects for debugging/testing
         self.crop = crop
+        self.adjacent_frame_sampling_prob = 0.2 # Trajectory NVS acceptance rate
 
         # actual data
         self.cam_params = {} # Dict[subject: (extrinsics, intrinsics, camera_scale)]
         self.scenes = self._load_scenes()
+
+        # from SD 2.1 VAE
+        self.downsample_factor = 8
+        self.scale_factor = 0.18215              
+        self.target_shape = (576, 576)
+        self.latent_shape = (self.num_images, 4, self.target_shape[0] // self.downsample_factor, 
+                          self.target_shape[1] // self.downsample_factor)
+
+        if self.transforms is None:
+            # default (no probabilistic crop), only CenterCrop
+            self.transform = T.Compose([
+                T.CenterCrop(self.image_shape[0]), # Center crop to square
+                T.Resize(self.target_shape),       # Resize to target shape
+                T.ToTensor(),                      # Convert to tensor
+                T.Normalize([0.5], [0.5])          # Normalize to [-1, 1]
+            ])
 
     def clean_camera_keys(self, data):
     # Create new dictionary with cleaned keys
@@ -370,7 +431,7 @@ class MVHumanNetDataset(Dataset):
 
             # for each subject, store camera parameters separately
             self.cam_params[subject] = {
-                'extrinsics': extrinsics, # Dict[camera_id: extrinsics]
+                'extrinsics': extrinsics, # Dict[camera_id: extrinsic params]
                 'intrinsics': intrinsics, # List[List] (turn to matrix)
                 'camera_scale': camera_scale # float
             }
@@ -393,6 +454,7 @@ class MVHumanNetDataset(Dataset):
                 frames = []
                 for camera in camera_dirs:
                     frame = {
+                        'camera': camera,
                         'image_path': os.path.join(images_path, camera, f"{timestep}_img.jpg"),
                         'mask_path': os.path.join(masks_path, camera, f"{timestep}_img_fmask.png"),
                         'annots_path': os.path.join(annots_path, camera, f"{timestep}_img.json")
@@ -412,7 +474,7 @@ class MVHumanNetDataset(Dataset):
     def __getitem__(self, idx):
         scene = self.scenes[idx]
         subject_id = scene['subject_id']
-        frames_info = scene['frames_info'] # List[Dict]
+        frames_info = scene['frames_info'] # list of dicts (dict per camera keyframe)
         subject_path = os.path.join(self.root_dir, subject_id) 
 
         # get camera parameters
@@ -420,64 +482,133 @@ class MVHumanNetDataset(Dataset):
         intrinsics = np.array(self.cam_params[subject_id]['intrinsics'])
         camera_scale = self.cam_params[subject_id]['camera_scale']        
 
-        if self.pre_scale != 1:
+        if self.pre_scale != 1: # update intrinsics
             intrinsics = update_intrinsics_resize(intrinsics, scale=self.pre_scale)
 
+        # Sample frames indices
+        if np.random.rand() <= self.adjacent_frame_sampling_prob: # for trajectory NVS
+            # choose which rung of cameras to sample from (top/mid/bot)
+            # this is only because these paths are the most apparently continuous
+            which_rung = np.random.randint(0, len(CAMERA_RUNGS))
+            rung_of_cameras = CAMERA_RUNGS[which_rung]
+            images_files = [frame['image_path'] for frame in frames_info if frame['camera'] in rung_of_cameras]
+            start_idx = np.random.randint(0, len(images_files) - self.num_images) # could use torch.roll, but we'll keep it simple
+            images_idxs = np.arange(start_idx, start_idx + self.num_images)
+        else: # for set NVS
+            images_files = [frame['image_path'] for frame in frames_info] # all keyframes
+            images_idxs = np.random.choice(len(images_files), self.num_images, replace=False)
+
+        images_files = [images_files[i] for i in images_idxs]
+
+        # load latents
         if self.latents_dir is not None:
             latents_dir = subject_path.replace(self.root_dir, self.latents_dir)
             latents_files = sorted([f for f in os.listdir(latents_dir) if f.endswith(".pt")])
             latents_files = [latents_files[i] for i in range(len(frames_info))]
             clean_latents = torch.stack([torch.load(os.path.join(latents_dir, latents_files[i])) for i in range(len(latents_files))])
-
         else:
+            # currently, we REQUIRE precomputed latents, so we throw error
+            # possibly add on-the-fly computation later
             clean_latents = None
+            raise ValueError("Latents directory must be provided for MVHumanNetDataset (as of now)")
 
-        # load in and mask image
-        # img = Image.open(img_path)
-        # mask = Image.open(mask_path)
-        # annots = load_json(annots_path)
+        # Load frames from image paths
+        # (T,3,H,W)
+        frames = torch.zeros((self.num_images, 3, self.target_shape[0],  self.target_shape[1]))
+        for i, img_file in enumerate(images_files):
+            image = Image.open(img_file).convert("RGB")
+            img_mask = Image.open(frames_info[i]['mask_path'])
+            # Create masked image by compositing with black background
+            background = Image.new('RGB', image.size, (0, 0, 0))
+            masked_image = Image.composite(image, background, img_mask)
+            # Apply transforms after masking
+            # NOTE: if using non-cropped latents, then transforms is just the default as in @dataset.py
+            masked_image = self.transform(masked_image) # images converted to square, [-1, 1] normalization
+            frames[i] = masked_image
+
+        
+        # Sample input and target frames (from the images we have now)
+        num_input_frames = np.random.randint(1, self.num_images)  # Randomly select number of input frames
+        input_frames_indices = np.random.choice(self.num_images, num_input_frames, replace=False) # Randomly select the input frames
+
+        # Create masks (for above 1: inputs/ 0: targets)
+        input_frames_mask = torch.zeros(self.num_images, dtype=torch.bool)
+        input_frames_mask[input_frames_indices] = True
+
+        camera_mask = torch.ones(self.num_images, dtype=torch.bool)
+
+        # Read extrinsics
+        all_c2ws = np.array([
+            # w2c -> c2w
+            create_tranformation_matrix(
+                np.array(extrinsics[cam]['rotation']).T,  # Transpose R for w2c -> c2w
+                -np.array(extrinsics[cam]['rotation']).T @ (np.array(extrinsics[cam]['translation']) * camera_scale)
+            ) for cam in extrinsics.keys()
+        ])
+        all_c2ws = torch.from_numpy(all_c2ws).float()
+        c2ws = all_c2ws[images_idxs]    # choose previously sampled ones only (NOTE: order is unknown right now, need to edit!)
+        center_cameras(all_c2ws, c2ws)  # mean center
+        scale_cameras(c2ws)
 
         # bbox params useful for cropping
-        H, W = int(annots['height'] * self.pre_scale), int(annots['width'] * self.pre_scale) # images not yet scaled down
-        bbox = torch.tensor(annots['annots'][0]['bbox'][:4])  # [x1, y1, x2, y2] (already scaled)
-        (center_x, center_y), (size_x, size_y) = get_bbox_center_and_size(bbox)
-        x1, y1, x2, y2 = int(bbox[0]), int(bbox[1]), int(bbox[2]), int(bbox[3])
-        
-        # Create masked image by using PIL's composite
-        background = Image.new('RGB', img.size, (0, 0, 0))
-        masked_img = Image.composite(img, background, mask)
+        # H, W = int(annots['height'] * self.pre_scale), int(annots['width'] * self.pre_scale) # images not yet scaled down
+        # bbox = torch.tensor(annots['annots'][0]['bbox'][:4])  # [x1, y1, x2, y2] (already scaled)
+        # (center_x, center_y), (size_x, size_y) = get_bbox_center_and_size(bbox)
+        # x1, y1, x2, y2 = int(bbox[0]), int(bbox[1]), int(bbox[2]), int(bbox[3])
 
-        # distributions to sample
-        # TODO: do this ONCE in init instead
-        # additionally, add the option to not crop
-        def center_sampler(batch_size):
-            # mean at center of bbox
-            mean = torch.tensor([x1 + size_x // 2, y1 + size_y // 2], dtype=torch.float32)
-            cov = torch.tensor([[size_x, 0], [0, size_y]], dtype=torch.float32)
-            weights = torch.tensor([0.7, 0.3])
-            # return generate_gaussian_samples(mean, cov, batch_size)
-            return generate_gaussian_mixture_samples([mean, (x1 + size_x // 2, y1)], [cov, cov], weights, batch_size)
+        # # distributions to sample
+        # # TODO: do this ONCE in init instead
+        # # additionally, add the option to not crop
+        # def center_sampler(batch_size):
+        #     # mean at center of bbox
+        #     mean = torch.tensor([x1 + size_x // 2, y1 + size_y // 2], dtype=torch.float32)
+        #     cov = torch.tensor([[size_x, 0], [0, size_y]], dtype=torch.float32)
+        #     weights = torch.tensor([0.7, 0.3])
+        #     # return generate_gaussian_samples(mean, cov, batch_size)
+        #     return generate_gaussian_mixture_samples([mean, (x1 + size_x // 2, y1)], [cov, cov], weights, batch_size)
 
-        def length_sampler(batch_size):
-            # Example: Sample from a 1D Gaussian for crop size
-            mean = torch.tensor([(size_x + size_y) // 1.5], dtype=torch.float32)  # mean is the smallest dim
-            cov = torch.tensor([[max(size_x, size_y)]], dtype=torch.float32)
-            return generate_gaussian_samples(mean, cov, batch_size)
+        # def length_sampler(batch_size):
+        #     # Example: Sample from a 1D Gaussian for crop size
+        #     mean = torch.tensor([(size_x + size_y) // 1.5], dtype=torch.float32)  # mean is the smallest dim
+        #     cov = torch.tensor([[max(size_x, size_y)]], dtype=torch.float32)
+        #     return generate_gaussian_samples(mean, cov, batch_size)
 
-        # random crop the image
-        random_cropper = RandomBBoxCrop(center_sampler, length_sampler)
-        cropped_image, updated_K = random_cropper(
-            T.functional.to_tensor(masked_img).detach().clone(),
-            (x1, y1, x2, y2),
-            intrinsics
-        )
+        # # random crop the image
+        # random_cropper = RandomBBoxCrop(center_sampler, length_sampler)
+        # cropped_image, updated_K = random_cropper(
+        #     T.functional.to_tensor(masked_img).detach().clone(),
+        #     (x1, y1, x2, y2),
+        #     intrinsics
+        # )
 
-        # apply transforms
-        if self.transforms is not None:
-            cropped_image = self.transforms(cropped_image)
-            # TODO: apply Resize-> update intrinsics
+        # replace = torch.cat( # clean latents and binary mask
+        #     [
+        #         clean_latents * self.scale_factor,
+        #         repeat(
+        #             input_frames_mask,
+        #             "n -> n 1 h w",
+        #             h=pluckers.shape[2],
+        #             w=pluckers.shape[3],
+        #         ),
+        #     ],
+        #     dim=1,
+        # ) # (T, 4 + 1, 72, 72), where 4 is for latents and 1 is for binary mask
 
-        return cropped_image, updated_K, transform_matrix
+        try:
+            output_dict = {
+                "clean_latent": clean_latents,
+                "mask": input_frames_mask,
+                "plucker": pluckers,
+                "camera_mask": camera_mask,
+                "concat": concat,
+                "frames": frames,
+                "replace": replace,
+            }
+        except Exception as e:
+            print(f"Error creating output_dict: {e}")
+            raise
+
+        return output_dict
 
 
 class MVHumanNetDataDictWrapper(Dataset):
