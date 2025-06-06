@@ -92,11 +92,9 @@ class ResBlock(nn.Module):
         out_channels: int | None,
         dense_in_channels: int,
         dropout: float,
-        training: bool = False,
     ):
         super().__init__()
         out_channels = out_channels or channels
-        self.training = training
         self.in_layers = nn.Sequential(
             GroupNorm32(32, channels),
             nn.SiLU(),

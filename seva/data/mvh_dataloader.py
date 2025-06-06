@@ -410,24 +410,32 @@ class MVHumanNetDataset(Dataset):
         return len(self.scenes)
     
     def __getitem__(self, idx):
-        # TODO: implement this
         scene = self.scenes[idx]
         subject_id = scene['subject_id']
-        frames_info = scene['frames_info']
-
+        frames_info = scene['frames_info'] # List[Dict]
+        subject_path = os.path.join(self.root_dir, subject_id) 
 
         # get camera parameters
         extrinsics = self.cam_params[subject_id]['extrinsics']
-        intrinsics = self.cam_params[subject_id]['intrinsics']
+        intrinsics = np.array(self.cam_params[subject_id]['intrinsics'])
         camera_scale = self.cam_params[subject_id]['camera_scale']        
 
         if self.pre_scale != 1:
             intrinsics = update_intrinsics_resize(intrinsics, scale=self.pre_scale)
 
+        if self.latents_dir is not None:
+            latents_dir = images_dir.replace(self.dataset_dir, self.latents_dir)
+            latents_files = sorted([f for f in os.listdir(latents_dir) if f.endswith(".pt")])
+            latents_files = [latents_files[i] for i in images_idxs]
+            clean_latents = torch.stack([torch.load(os.path.join(latents_dir, latents_files[i])) for i in range(len(latents_files))])
+
+        else:
+            clean_latents = None
+
         # load in and mask image
-        img = Image.open(img_path)
-        mask = Image.open(mask_path)
-        annots = load_json(annots_path)
+        # img = Image.open(img_path)
+        # mask = Image.open(mask_path)
+        # annots = load_json(annots_path)
 
         # bbox params useful for cropping
         H, W = int(annots['height'] * self.pre_scale), int(annots['width'] * self.pre_scale) # images not yet scaled down
