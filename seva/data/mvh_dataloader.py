@@ -142,38 +142,237 @@ class RandomBBoxCrop(object):
         return image, K_new
 
 
+# NOTE: OLD version
+# class MVHumanNetDataset(Dataset):
+#     def __init__(
+#         self,
+#         root_dir,
+#         latents_dir=None,
+#         transforms=None,
+#         pre_scale=0.5,
+#         data_limit=None,
+#         crop=True,
+#     ):
+#         self.root_dir = root_dir             # directory of all subject directories
+#         self.latents_dir = latents_dir       # directory of all latents
+#         self.image_paths = []                # main image data paths
+#         self.mask_paths = []                 # (+ masks)
+#         self.annots_paths = []               # bbox parameters in stored here
+#         # These are per subject rather than per timestep
+#         self.subject_projective_params = {}  # Dict[subject: (extrinsics, intrinsics)]
+#         self.camera_scale = {}               # float, to be multiplied with camera center.
+#         self.transforms = transforms         # transforms for the random crop
+#         self.pre_scale = pre_scale           # since MVHumanNet is downsampled, update intrinsics
+#         self.data_limit = data_limit # TEMP (int) -- just to limit number of subjects for debugging/testing
+#         self.crop = crop
+
+#         # get paths to relevant data
+#         for i, subject in enumerate(os.listdir(root_dir)):
+#             if self.data_limit is not None and i >= self.data_limit:
+#                 break
+#             subject_path = os.path.join(root_dir, subject)  
+#             if not os.path.isdir(subject_path):
+#                 continue
+
+#             # get subject metadata
+#             extrinsics_path = os.path.join(subject_path, 'camera_extrinsics.json')
+#             intrinsics_path = os.path.join(subject_path, 'camera_intrinsics.json')
+#             extrinsics = load_json(extrinsics_path)
+#             intrinsics = load_json(intrinsics_path)
+
+#             self.camera_scale[subject] = load_pickle(os.path.join(subject_path, 'camera_scale.pkl'))
+#             self.subject_projective_params[subject] = {
+#                 'extrinsics': extrinsics,
+#                 'intrinsics': intrinsics
+#             }
+
+#             # annots, images, masks share the same camera directory names
+#             annots_path = os.path.join(subject_path, 'annots')
+#             images_path = os.path.join(subject_path, 'images_lr')
+#             masks_path = os.path.join(subject_path, 'fmask_lr')
+
+#             # for each camera
+#             for camera in os.listdir(masks_path): # NOTE: listdir is arbitrary order
+#                 # retrieve data for each timestep
+#                 if not os.path.isdir(os.path.join(masks_path, camera)):
+#                     continue
+#                 for timestep in os.listdir(os.path.join(masks_path, camera)):
+#                     if timestep.endswith('.png'):
+#                         self.image_paths.append(os.path.join(images_path, camera, timestep.replace('_fmask.png', '.jpg')))
+#                         self.mask_paths.append(os.path.join(masks_path, camera, timestep))
+#                         self.annots_paths.append(os.path.join(annots_path, camera, timestep.replace('_fmask.png', '.json')))
+
+
+#     def __len__(self):
+#         return len(self.image_paths)
+    
+#     def __getitem__(self, idx):
+#         img_path = self.image_paths[idx]
+#         mask_path = self.mask_paths[idx]
+#         annots_path = self.annots_paths[idx]
+#         subject = img_path.split('/')[-4] # hardcoded, TODO: change
+#         camera = img_path.split('/')[-2]
+
+#         extrinsics = self.subject_projective_params[subject]['extrinsics'][f"1_{camera}.png"]
+#         transform_matrix = get_mvhumannet_extrinsics(extrinsics, scale=self.camera_scale[subject])
+#         intrinsics = torch.tensor(self.subject_projective_params[subject]['intrinsics']['intrinsics'])
+#         if self.pre_scale != 1:
+#             intrinsics = update_intrinsics_resize(intrinsics, scale=self.pre_scale)
+
+
+#         # load in and mask image
+#         img = Image.open(img_path)
+#         mask = Image.open(mask_path)
+#         annots = load_json(annots_path)
+
+#         # bbox params useful for cropping
+#         H, W = int(annots['height'] * self.pre_scale), int(annots['width'] * self.pre_scale) # images not yet scaled down
+#         bbox = torch.tensor(annots['annots'][0]['bbox'][:4])  # [x1, y1, x2, y2] (already scaled)
+#         (center_x, center_y), (size_x, size_y) = get_bbox_center_and_size(bbox)
+#         x1, y1, x2, y2 = int(bbox[0]), int(bbox[1]), int(bbox[2]), int(bbox[3])
+        
+#         # Create masked image by using PIL's composite
+#         background = Image.new('RGB', img.size, (0, 0, 0))
+#         masked_img = Image.composite(img, background, mask)
+
+#         # distributions to sample
+#         # TODO: do this ONCE in init instead
+#         # additionally, add the option to not crop
+#         def center_sampler(batch_size):
+#             # mean at center of bbox
+#             mean = torch.tensor([x1 + size_x // 2, y1 + size_y // 2], dtype=torch.float32)
+#             cov = torch.tensor([[size_x, 0], [0, size_y]], dtype=torch.float32)
+#             weights = torch.tensor([0.7, 0.3])
+#             # return generate_gaussian_samples(mean, cov, batch_size)
+#             return generate_gaussian_mixture_samples([mean, (x1 + size_x // 2, y1)], [cov, cov], weights, batch_size)
+
+#         def length_sampler(batch_size):
+#             # Example: Sample from a 1D Gaussian for crop size
+#             mean = torch.tensor([(size_x + size_y) // 1.5], dtype=torch.float32)  # mean is the smallest dim
+#             cov = torch.tensor([[max(size_x, size_y)]], dtype=torch.float32)
+#             return generate_gaussian_samples(mean, cov, batch_size)
+
+#         # random crop the image
+#         random_cropper = RandomBBoxCrop(center_sampler, length_sampler)
+#         cropped_image, updated_K = random_cropper(
+#             T.functional.to_tensor(masked_img).detach().clone(),
+#             (x1, y1, x2, y2),
+#             intrinsics
+#         )
+
+#         # apply transforms
+#         if self.transforms is not None:
+#             cropped_image = self.transforms(cropped_image)
+#             # TODO: apply Resize-> update intrinsics
+
+#         return cropped_image, updated_K, transform_matrix
+
+        # output_dict = {
+        #     "clean_latent": clean_latents,
+        #     "mask": input_frames_mask,
+        #     "plucker": pluckers,
+        #     "camera_mask": camera_mask,
+        #     "concat": concat,
+        #     "frames": frames,
+        #     "replace": replace,
+        # } # this is what needs to be returned!
+
+# transform = T.Compose([
+#     T.Resize(576), # whatever final resolution we want here
+#     T.ToTensor(),
+# ]) should be something like this^
+
+# NOTE: hardcoded camera order for each camera elevation (counter clockwise)
+# use for trajectory NVS training!
+# Camera IDs organized by rung elevation
+TOP_RUNG = [
+    'CC32871A043', 'CC32871A018', 'CC32871A012', 'CC32871A021',
+    'CC32871A060', 'CC32871A006', 'CC32871A042', 'CC32871A041', 
+    'CC32871A049', 'CC32871A036', 'CC32871A047', 'CC32871A019',
+    'CC32871A020', 'CC32871A056', 'CC32871A009', 'CC32871A014'
+]
+
+MIDDLE_RUNG = [
+    'CC32871A005', 'CC32871A033', 'CC32871A050', 'CC32871A059',
+    'CC32871A017', 'CC32871A034', 'CC32871A032', 'CC32871A052',
+    'CC32871A039', 'CC32871A058', 'CC32871A013', 'CC32871A004',
+    'CC32871A044', 'CC32871A031', 'CC32871A055', 'CC32871A029'
+]
+
+BOTTOM_RUNG = [
+    'CC32871A035', 'CC32871A016', 'CC32871A030', 'CC32871A038',
+    'CC32871A023', 'CC32871A027', 'CC32871A051', 'CC32871A015',
+    'CC32871A022', 'CC32871A057', 'CC32871A048', 'CC32871A008',
+    'CC32871A046', 'CC32871A010', 'CC32871A040', 'CC32871A037'
+]
+
+CAMERA_RUNGS = [TOP_RUNG, MIDDLE_RUNG, BOTTOM_RUNG]
+
+
+# NOTE: NEW version -- more aligned with DL3DVDataModuleFromConfig
 class MVHumanNetDataset(Dataset):
-    def __init__(self, root_dir, transforms=None, pre_scale=0.5, data_limit=None):
+    def __init__(
+        self,
+        root_dir,
+        latents_dir=None,
+        transforms=None,
+        pre_scale=0.5,
+        data_limit=None,
+        crop=True,
+    ):
         self.root_dir = root_dir             # directory of all subject directories
-        self.image_paths = []                # main image data paths
-        self.mask_paths = []                 # (+ masks)
-        self.annots_paths = []               # bbox parameters in stored here
-        # These are per subject rather than per timestep
-        self.subject_projective_params = {}  # Dict[subject: (extrinsics, intrinsics)]
-        self.camera_scale = {}               # float, to be multiplied with camera center.
+        self.latents_dir = latents_dir       # directory of all latents
         self.transforms = transforms         # transforms for the random crop
         self.pre_scale = pre_scale           # since MVHumanNet is downsampled, update intrinsics
-        self.data_limit = data_limit # TEMP -- just to limit number of subjects
+        self.data_limit = data_limit # TEMP (int) -- just to limit number of subjects for debugging/testing
+        self.crop = crop
+
+        # actual data
+        self.cam_params = {} # Dict[subject: (extrinsics, intrinsics, camera_scale)]
+        self.scenes = self._load_scenes()
+
+    def clean_camera_keys(self, data):
+    # Create new dictionary with cleaned keys
+        cleaned_data = {}
+        for key, value in data.items():
+            # Extract just the camera ID number
+            camera_id = key[2:-4] # remove "1_" and ".png" from camera_extrinsics.json
+            cleaned_data[camera_id] = value
+        return cleaned_data
 
 
-        # get paths to relevant data
-        for i, subject in enumerate(os.listdir(root_dir)):
+    def _load_scenes(self):
+        """
+        For each subject in MVHumanNet, load dict:
+        - frames_info: list of dicts, each with keys:
+            - image_path
+            - mask_path
+            - annots_path
+        - subject_id
+        (Implicitly also updates self.cam_params)
+        """
+        scenes = []
+        for i, subject in enumerate(os.listdir(self.root_dir)):
             if self.data_limit is not None and i >= self.data_limit:
                 break
-            subject_path = os.path.join(root_dir, subject)  
-            if not os.path.isdir(subject_path):
+            subject_path = os.path.join(self.root_dir, subject)  
+            if not os.path.isdir(subject_path): # ignore non-directories
                 continue
 
             # get subject metadata
+            # NOTE: for MVHumanNet, all cameras have the same intrinsics
+            # if different dataset, then may need to generalize this!
             extrinsics_path = os.path.join(subject_path, 'camera_extrinsics.json')
             intrinsics_path = os.path.join(subject_path, 'camera_intrinsics.json')
-            extrinsics = load_json(extrinsics_path)
-            intrinsics = load_json(intrinsics_path)
+            extrinsics = self.clean_camera_keys(load_json(extrinsics_path))
+            intrinsics = load_json(intrinsics_path)['intrinsics'] # same for all cameras
+            camera_scale = load_pickle(os.path.join(subject_path, 'camera_scale.pkl'))
 
-            self.camera_scale[subject] = load_pickle(os.path.join(subject_path, 'camera_scale.pkl'))
-            self.subject_projective_params[subject] = {
-                'extrinsics': extrinsics,
-                'intrinsics': intrinsics
+            # for each subject, store camera parameters separately
+            self.cam_params[subject] = {
+                'extrinsics': extrinsics, # Dict[camera_id: extrinsics]
+                'intrinsics': intrinsics, # List[List] (turn to matrix)
+                'camera_scale': camera_scale # float
             }
 
             # annots, images, masks share the same camera directory names
@@ -181,34 +380,49 @@ class MVHumanNetDataset(Dataset):
             images_path = os.path.join(subject_path, 'images_lr')
             masks_path = os.path.join(subject_path, 'fmask_lr')
 
-            # for each camera
-            for camera in os.listdir(masks_path): # NOTE: listdir is arbitrary order
-                # retrieve data for each timestep
-                if not os.path.isdir(os.path.join(masks_path, camera)):
-                    continue
-                for timestep in os.listdir(os.path.join(masks_path, camera)):
-                    if timestep.endswith('.png'):
-                        self.image_paths.append(os.path.join(images_path, camera, timestep.replace('_fmask.png', '.jpg')))
-                        self.mask_paths.append(os.path.join(masks_path, camera, timestep))
-                        self.annots_paths.append(os.path.join(annots_path, camera, timestep.replace('_fmask.png', '.json')))
+            # NOTE: assumes the same cameras exist for each subject
+            camera_dirs = [d for d in os.listdir(masks_path) if os.path.isdir(os.path.join(masks_path, d))]
 
+            # Get first directory (to get number of timesteps)
+            first_dir = camera_dirs[0]
+            first_dir_path = os.path.join(masks_path, first_dir)
+            timesteps = len([f for f in os.listdir(first_dir_path)])
+
+            for i in range(1, timesteps + 1):
+                timestep = f"{i * 5:04d}"
+                frames = []
+                for camera in camera_dirs:
+                    frame = {
+                        'image_path': os.path.join(images_path, camera, f"{timestep}_img.jpg"),
+                        'mask_path': os.path.join(masks_path, camera, f"{timestep}_img_fmask.png"),
+                        'annots_path': os.path.join(annots_path, camera, f"{timestep}_img.json")
+                    }
+                    frames.append(frame)
+
+                scenes.append({
+                    'subject_id': subject, # string ID
+                    'frames_info': frames,  # list of dicts
+                })
+                
+        return scenes
 
     def __len__(self):
-        return len(self.image_paths)
+        return len(self.scenes)
     
     def __getitem__(self, idx):
-        img_path = self.image_paths[idx]
-        mask_path = self.mask_paths[idx]
-        annots_path = self.annots_paths[idx]
-        subject = img_path.split('/')[-4] # hardcoded, TODO: change
-        camera = img_path.split('/')[-2]
+        # TODO: implement this
+        scene = self.scenes[idx]
+        subject_id = scene['subject_id']
+        frames_info = scene['frames_info']
 
-        extrinsics = self.subject_projective_params[subject]['extrinsics'][f"1_{camera}.png"]
-        transform_matrix = get_mvhumannet_extrinsics(extrinsics, scale=self.camera_scale[subject])
-        intrinsics = torch.tensor(self.subject_projective_params[subject]['intrinsics']['intrinsics'])
+
+        # get camera parameters
+        extrinsics = self.cam_params[subject_id]['extrinsics']
+        intrinsics = self.cam_params[subject_id]['intrinsics']
+        camera_scale = self.cam_params[subject_id]['camera_scale']        
+
         if self.pre_scale != 1:
             intrinsics = update_intrinsics_resize(intrinsics, scale=self.pre_scale)
-
 
         # load in and mask image
         img = Image.open(img_path)
@@ -257,10 +471,6 @@ class MVHumanNetDataset(Dataset):
 
         return cropped_image, updated_K, transform_matrix
 
-# transform = T.Compose([
-#     T.Resize(576), # whatever final resolution we want here
-#     T.ToTensor(),
-# ]) should be something like this^
 
 class MVHumanNetDataDictWrapper(Dataset):
     def __init__(self, dset):
