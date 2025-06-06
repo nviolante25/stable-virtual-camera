@@ -424,9 +424,9 @@ class MVHumanNetDataset(Dataset):
             intrinsics = update_intrinsics_resize(intrinsics, scale=self.pre_scale)
 
         if self.latents_dir is not None:
-            latents_dir = images_dir.replace(self.dataset_dir, self.latents_dir)
+            latents_dir = subject_path.replace(self.root_dir, self.latents_dir)
             latents_files = sorted([f for f in os.listdir(latents_dir) if f.endswith(".pt")])
-            latents_files = [latents_files[i] for i in images_idxs]
+            latents_files = [latents_files[i] for i in range(len(frames_info))]
             clean_latents = torch.stack([torch.load(os.path.join(latents_dir, latents_files[i])) for i in range(len(latents_files))])
 
         else:
