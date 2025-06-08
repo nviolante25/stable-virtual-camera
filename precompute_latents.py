@@ -4,6 +4,7 @@ from torchvision import transforms
 from PIL import Image
 from diffusers import AutoencoderKL
 from tqdm import tqdm
+import argparse
 
 # Load the VAE model of Stable Diffusion 2.1
 vae = AutoencoderKL.from_pretrained("stabilityai/stable-diffusion-2-1-base", subfolder="vae").cuda()
@@ -13,17 +14,24 @@ vae.eval()
 DATASET_DIR = "/workspace/datasetvol/mvhuman_data/mv_captures"
 TARGET_DIR = "/workspace/datasetvol/mvhuman_data/mv_latents"
 
-import argparse
 
 # Set up argument parser
 parser = argparse.ArgumentParser(description='Precompute latents from images')
+parser.add_argument('--dataset_dir', type=str, default=DATASET_DIR,
+                   help='Dataset directory (default: /workspace/datasetvol/mvhuman_data/mv_captures)')
+parser.add_argument('--target_dir', type=str, default=TARGET_DIR,
+                   help='Target directory to store computed latents (default: /workspace/datasetvol/mvhuman_data/mv_latents)')
 parser.add_argument('--max_subjects', type=int, default=None,
                    help='Number of subjects to process (default: process all)')
 parser.add_argument('--overwrite', action='store_false',
                    help='Overwrite existing latents (default: False)')
+parser.add_argument('--batch_size', type=int, default=16,
+                   help='Batch size for encoding latents (default: 16)')
 
 args = parser.parse_args()
-
+DATASET_DIR = args.dataset_dir
+TARGET_DIR = args.target_dir
+BATCH_SIZE = args.batch_size
 
 # Define image preprocessing
 # NOTE: remember to update intrinsics for crop!
@@ -101,8 +109,8 @@ def process_and_save_latents(scene_path, target_scene_path):
         return
         
     camera_dirs = [d for d in os.listdir(images_lr_path) if os.path.isdir(os.path.join(images_lr_path, d)) and d.startswith('CC')]
-    print(f"Found camera directories: {camera_dirs}")
-    batch_size = 16
+    # print(f"Found camera directories: {camera_dirs}")
+    batch_size = BATCH_SIZE
 
     for camera_dir in camera_dirs:
         # Create camera-specific directory in target
@@ -111,7 +119,7 @@ def process_and_save_latents(scene_path, target_scene_path):
         
         # Get all images for this camera
         camera_path = os.path.join(images_lr_path, camera_dir)
-        print(f"Checking camera path: {camera_path}")
+        # print(f"Checking camera path: {camera_path}")
         image_names = [name for name in os.listdir(camera_path) if name.lower().endswith(('.png', '.jpg', '.jpeg'))]
         print(f"Found {len(image_names)} images in {camera_dir}")
         
@@ -125,11 +133,11 @@ def process_and_save_latents(scene_path, target_scene_path):
             )]
         # else: implicit full overwrite (uses full image_names list)
 
-        if not image_names: # empty list
-            print(f"Skipping {camera_dir} - all latents already exist")
-            continue
+        # if not image_names: # empty list
+        #     print(f"Skipping {camera_dir} - all latents already exist")
+        #     continue
 
-        print(f"Processing {len(image_names)} images in {camera_dir}")
+        # print(f"Processing {len(image_names)} images in {camera_dir}")
         for i in range(0, len(image_names), batch_size):
             batch_names = image_names[i:i + batch_size]
             batch_images = []
@@ -137,7 +145,7 @@ def process_and_save_latents(scene_path, target_scene_path):
             # Load and preprocess images in the batch
             for image_name in batch_names:
                 image_path = os.path.join(camera_path, image_name)
-                print(f"Loading image: {image_path}")
+                # print(f"Loading image: {image_path}")
                 image = Image.open(image_path).convert("RGB")
                 image_tensor = preprocess(image)
                 batch_images.append(image_tensor)
@@ -157,7 +165,7 @@ def process_and_save_latents(scene_path, target_scene_path):
                 frame_num = image_name.split('_')[0]
                 latent_path = os.path.join(target_camera_dir, f"{frame_num}_latent.pt")
                 torch.save(latents[j], latent_path)
-                print(f"Saved latent for {frame_num}")
+                # print(f"Saved latent for {frame_num}")
             
             # Clear GPU memory after each batch
             del batch_tensor, latents
@@ -170,13 +178,17 @@ print(f"Target directory: {TARGET_DIR}")
 for subject in tqdm(os.listdir(DATASET_DIR), desc="Processing subjects"):
     if args.max_subjects is not None and i >= args.max_subjects:
         break
-    i += 1
 
     subject_path = os.path.join(DATASET_DIR, subject)
     if os.path.isdir(subject_path):
-        print(f"\nFound subject directory: {subject_path}")
         target_subject_path = os.path.join(TARGET_DIR, subject)
+        if os.path.exists(target_subject_path):
+            print(f"Skipping {subject} - already exists in target directory")
+            continue
+        print(f"\nProcessing subject: {subject}")
         process_and_save_latents(subject_path, target_subject_path)
+        print(f"Finished subject: {subject}")
+        i += 1
 
 print("Processing complete. Latents saved.")
 
