@@ -7,6 +7,7 @@ from diffusers import AutoencoderKL
 from tqdm import tqdm
 import argparse
 from functools import partial
+import numpy as np
 
 # Load the VAE model of Stable Diffusion 2.1
 vae = AutoencoderKL.from_pretrained("stabilityai/stable-diffusion-2-1-base", subfolder="vae").cuda()
@@ -61,7 +62,7 @@ def process_camera_dir(model, camera_path, target_camera_dir, device, batch_size
     if not args.overwrite:
         image_names = [
             name for name in image_names 
-            if not os.path.exists(os.path.join(target_camera_dir, f"{name.split('_')[0]}_latent.pt"))
+            if not os.path.exists(os.path.join(target_camera_dir, f"{name.split('_')[0]}_latent.npz"))
         ]
     
     # Process in batches
@@ -90,8 +91,13 @@ def process_camera_dir(model, camera_path, target_camera_dir, device, batch_size
             # Save latents
             for j, image_name in enumerate(batch_names):
                 frame_num = image_name.split('_')[0]
-                latent_path = os.path.join(target_camera_dir, f"{frame_num}_latent.pt")
-                torch.save(latents[j], latent_path)
+                latent_path = os.path.join(target_camera_dir, f"{frame_num}_latent.npz")
+                # Convert to numpy and save compressed
+                latent_np = latents[j].cpu().numpy()
+                np.savez_compressed(latent_path, latent=latent_np)
+                # if legacy format exists, delete it
+                if os.path.exists(os.path.join(target_camera_dir, f"{frame_num}_latent.pt")):
+                    os.remove(os.path.join(target_camera_dir, f"{frame_num}_latent.pt"))
             
             # Clear GPU memory
             del latents
