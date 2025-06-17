@@ -375,6 +375,7 @@ class MVHumanNetDataset(Dataset):
         # actual data
         self.cam_params = {} # Dict[subject: (extrinsics, intrinsics, camera_scale)]
         self.scenes = self._load_scenes()
+        self.image_shape = (1500, 2048) # MVHumanNet images are 2048x1500
 
         # from SD 2.1 VAE
         self.downsample_factor = 8
@@ -503,12 +504,11 @@ class MVHumanNetDataset(Dataset):
         # load latents
         if self.latents_dir is not None:
             latents_dir = subject_path.replace(self.root_dir, self.latents_dir)
-            latents_files = sorted([f for f in os.listdir(latents_dir) if f.endswith(".pt")])
-            latents_files = [latents_files[i] for i in range(len(frames_info))]
-            clean_latents = torch.stack([torch.load(os.path.join(latents_dir, latents_files[i])) for i in range(len(latents_files))])
+            latents_files = sorted([f for f in os.listdir(latents_dir) if f.endswith(".npz")]) # changed to accept npz files only
+            clean_latents = torch.stack([torch.from_numpy(np.load(os.path.join(latents_dir, latents_files[i]))['latent']) for i in range(len(latents_files))])
         else:
             # currently, we REQUIRE precomputed latents, so we throw error
-            # possibly add on-the-fly computation later
+            # (possibly add on-the-fly computation later)
             clean_latents = None
             raise ValueError("Latents directory must be provided for MVHumanNetDataset (as of now)")
 
@@ -549,6 +549,49 @@ class MVHumanNetDataset(Dataset):
         c2ws = all_c2ws[images_idxs]    # choose previously sampled ones only (NOTE: order is unknown right now, need to edit!)
         center_cameras(all_c2ws, c2ws)  # mean center
         scale_cameras(c2ws)
+
+        # create intrinsics tensor, update intrinsics
+        # TODO: accept multiple camera intrinsics (for random cropping)
+        # NOTE: for preliminary fine-tune testing, we currently account for the uniform center crop
+        crop_amount = (self.image_shape[1] - self.target_shape[0]) // 2 # (W - H) // 2: assumes W > H
+        Ks = update_intrinsics(np.array(intrinsics), crop_x=crop_amount, crop_y=0)
+        Ks = repeat(Ks, 'd1 d2 -> n d1 d2', n=self.num_images) # assumes all intrinsics are the same for now 
+        Ks = torch.from_numpy(Ks).float()
+
+        w2cs = torch.linalg.inv(c2ws)
+        pluckers = get_plucker_coordinates(
+            extrinsics_src=w2cs[input_frames_indices[0]],
+            extrinsics=w2cs,
+            intrinsics=Ks.clone(),
+            target_size=(self.target_shape[0] // self.downsample_factor, 
+                         self.target_shape[1] // self.downsample_factor),
+        )
+
+        concat = torch.cat( # binary mask and plcukers
+            [
+                repeat(
+                    input_frames_mask,
+                    "n -> n 1 h w",
+                    h=pluckers.shape[2],
+                    w=pluckers.shape[3],
+                ),
+                pluckers,
+            ],
+            dim=1,
+        ) # (T, 6 + 1, 72, 72), where 6 is for plucker coords and 1 for binary mask
+
+        replace = torch.cat( # clean latents and binary mask
+            [
+                clean_latents * self.scale_factor,
+                repeat(
+                    input_frames_mask,
+                    "n -> n 1 h w",
+                    h=pluckers.shape[2],
+                    w=pluckers.shape[3],
+                ),
+            ],
+            dim=1,
+        )
 
         # bbox params useful for cropping
         # H, W = int(annots['height'] * self.pre_scale), int(annots['width'] * self.pre_scale) # images not yet scaled down
