@@ -28,7 +28,7 @@ import torchvision.transforms.v2 as T
 import pytorch_lightning as pl
 from seva.data.preprocessing import (
     update_intrinsics,
-    create_tranformation_matrix,
+    create_transform_matrix,
     get_bbox_center_and_size,
     get_mvhumannet_extrinsics,
     load_json,
@@ -679,7 +679,8 @@ class MVHumanNetLoader(pl.LightningDataModule):
         num_workers: int = 0,
         shuffle: bool = True,
         image_size: int = 576,
-        data_limit: int = None
+        data_limit: int = None,
+        only_include: list = None,
     ):
         super().__init__()
         
@@ -688,6 +689,7 @@ class MVHumanNetLoader(pl.LightningDataModule):
         self.num_workers = num_workers
         self.shuffle = shuffle
         self.data_limit = data_limit
+        self.only_include = only_include
         # Define transforms
         self.transform = T.Compose([
             T.Resize(image_size), # whatever final resolution we want here
@@ -701,7 +703,8 @@ class MVHumanNetLoader(pl.LightningDataModule):
                 MVHumanNetDataset(
                     root_dir=os.path.join(self.root_dir),
                     transforms=self.transform,
-                    data_limit=self.data_limit
+                    data_limit=self.data_limit,
+                    only_include=self.only_include
                 )
             )
             # self.val_dataset = MVHumanNetDataDictWrapper(
@@ -715,7 +718,8 @@ class MVHumanNetLoader(pl.LightningDataModule):
                 MVHumanNetDataset(
                     root_dir=os.path.join(self.root_dir, "test"),
                     transforms=self.transform,
-                    data_limit=self.data_limit
+                    data_limit=self.data_limit,
+                    only_include=self.only_include
                 )
             )
 
