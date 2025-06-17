@@ -361,6 +361,7 @@ class MVHumanNetDataset(Dataset):
         transforms=None,
         pre_scale=0.5,
         data_limit=None,
+        only_include=None,
         crop=True,
     ):
         self.root_dir = root_dir             # directory of all subject directories
@@ -368,7 +369,8 @@ class MVHumanNetDataset(Dataset):
         self.num_images = num_images         # context window T
         self.transforms = transforms         # transforms for the random crop
         self.pre_scale = pre_scale           # since MVHumanNet is downsampled, update intrinsics
-        self.data_limit = data_limit # TEMP (int) -- just to limit number of subjects for debugging/testing
+        self.include_only = include_only     # TEMP -- include only these subjects (as List of strings)
+        self.data_limit = data_limit         # TEMP -- only get the first 'data_limit' (int) subjects
         self.crop = crop
         self.adjacent_frame_sampling_prob = 0.2 # Trajectory NVS acceptance rate
 
@@ -393,8 +395,8 @@ class MVHumanNetDataset(Dataset):
                 T.Normalize([0.5], [0.5])          # Normalize to [-1, 1]
             ])
 
-    def clean_camera_keys(self, data):
-    # Create new dictionary with cleaned keys
+    def _clean_camera_keys(self, data):
+        # Create new dictionary with cleaned keys
         cleaned_data = {}
         for key, value in data.items():
             # Extract just the camera ID number
@@ -420,13 +422,15 @@ class MVHumanNetDataset(Dataset):
             subject_path = os.path.join(self.root_dir, subject)  
             if not os.path.isdir(subject_path): # ignore non-directories
                 continue
+            if self.only_include is not None and subject not in self.only_include:
+                continue  # include the given subjects only
 
             # get subject metadata
             # NOTE: for MVHumanNet, all cameras have the same intrinsics
             # if different dataset, then may need to generalize this!
             extrinsics_path = os.path.join(subject_path, 'camera_extrinsics.json')
             intrinsics_path = os.path.join(subject_path, 'camera_intrinsics.json')
-            extrinsics = self.clean_camera_keys(load_json(extrinsics_path))
+            extrinsics = self._clean_camera_keys(load_json(extrinsics_path))
             intrinsics = load_json(intrinsics_path)['intrinsics'] # same for all cameras
             camera_scale = load_pickle(os.path.join(subject_path, 'camera_scale.pkl'))
 
