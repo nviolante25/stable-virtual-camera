@@ -78,6 +78,18 @@ def normalize_camera_poses(camera_poses, scale_factor=1.0):
         normalized_poses.append(new_pose)
     
     return normalized_poses
+
+
+def normalize_intrinsics(intrinsics, H, W):
+    """
+    Normalize intrinsics to a smaller scale while preserving their relative positions.
+    """
+    intrinsics[0, 0] = intrinsics[0, 0] / W
+    intrinsics[1, 1] = intrinsics[1, 1] / H
+    intrinsics[0, 2] = intrinsics[0, 2] / W
+    intrinsics[1, 2] = intrinsics[1, 2] / H
+    return intrinsics
+
  
 def generate_gaussian_samples(mean, cov, n_samples=1000, device=None, dtype=None):
     mean = torch.as_tensor(mean, device=device, dtype=dtype)

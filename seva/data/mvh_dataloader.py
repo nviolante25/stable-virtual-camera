@@ -35,7 +35,8 @@ from seva.data.preprocessing import (
     load_pickle,
     update_intrinsics_resize,
     generate_gaussian_mixture_samples,
-    generate_gaussian_samples
+    generate_gaussian_samples,
+    normalize_intrinsics
 )
 import time
 
@@ -369,7 +370,7 @@ class MVHumanNetDataset(Dataset):
         self.num_images = num_images         # context window T
         self.transforms = transforms         # transforms for the random crop
         self.pre_scale = pre_scale           # since MVHumanNet is downsampled, update intrinsics
-        self.include_only = include_only     # TEMP -- include only these subjects (as List of strings)
+        self.only_include = only_include     # TEMP -- include only these subjects (as List of strings)
         self.data_limit = data_limit         # TEMP -- only get the first 'data_limit' (int) subjects
         self.crop = crop
         self.adjacent_frame_sampling_prob = 0.2 # Trajectory NVS acceptance rate
@@ -469,6 +470,7 @@ class MVHumanNetDataset(Dataset):
                 scenes.append({
                     'subject_id': subject, # string ID
                     'frames_info': frames,  # list of dicts
+                    'timestep': timestep
                 })
                 
         return scenes
@@ -479,6 +481,7 @@ class MVHumanNetDataset(Dataset):
     def __getitem__(self, idx):
         scene = self.scenes[idx]
         subject_id = scene['subject_id']
+        timestep = scene['timestep']
         frames_info = scene['frames_info'] # list of dicts (dict per camera keyframe)
         subject_path = os.path.join(self.root_dir, subject_id) 
 
@@ -505,11 +508,22 @@ class MVHumanNetDataset(Dataset):
 
         images_files = [images_files[i] for i in images_idxs]
 
+        print("images_files: ", len(images_files))
+        print("images_dir: ", self.root_dir)
+        print("latents_dir [before]: ", self.latents_dir)
+
         # load latents
         if self.latents_dir is not None:
             latents_dir = subject_path.replace(self.root_dir, self.latents_dir)
-            latents_files = sorted([f for f in os.listdir(latents_dir) if f.endswith(".npz")]) # changed to accept npz files only
-            clean_latents = torch.stack([torch.from_numpy(np.load(os.path.join(latents_dir, latents_files[i]))['latent']) for i in range(len(latents_files))])
+            latents_dir = os.path.join(latents_dir, "images_lr")
+            sample_cameras = [os.path.join(latents_dir, frames_info[i]['camera']) for i in images_idxs]
+            print("sample_cameras: ", sample_cameras)
+            print("latents_dir [after]: ", latents_dir)
+
+            latents_files = sorted([os.path.join(sample_cam_dir, f"{timestep}_latent.npz") for sample_cam_dir in sample_cameras]) # changed to accept npz files only
+            print("latent_files number: ", len(latents_files))
+            clean_latents = torch.stack([torch.from_numpy(np.load(latents_files[i])['latent']) for i in range(len(latents_files))])
+            print(f"Loaded clean_latents shape: {clean_latents.shape}")
         else:
             # currently, we REQUIRE precomputed latents, so we throw error
             # (possibly add on-the-fly computation later)
@@ -530,10 +544,13 @@ class MVHumanNetDataset(Dataset):
             masked_image = self.transform(masked_image) # images converted to square, [-1, 1] normalization
             frames[i] = masked_image
 
+        print("frames.shape: ", frames.shape)
         
         # Sample input and target frames (from the images we have now)
         num_input_frames = np.random.randint(1, self.num_images)  # Randomly select number of input frames
         input_frames_indices = np.random.choice(self.num_images, num_input_frames, replace=False) # Randomly select the input frames
+
+        print("input_frames_indices: ", input_frames_indices)
 
         # Create masks (for above 1: inputs/ 0: targets)
         input_frames_mask = torch.zeros(self.num_images, dtype=torch.bool)
@@ -544,7 +561,7 @@ class MVHumanNetDataset(Dataset):
         # Read extrinsics
         all_c2ws = np.array([
             # w2c -> c2w
-            create_tranformation_matrix(
+            create_transform_matrix(
                 np.array(extrinsics[cam]['rotation']).T,  # Transpose R for w2c -> c2w
                 -np.array(extrinsics[cam]['rotation']).T @ (np.array(extrinsics[cam]['translation']) * camera_scale)
             ) for cam in extrinsics.keys()
@@ -560,6 +577,7 @@ class MVHumanNetDataset(Dataset):
         crop_amount = (self.image_shape[1] - self.target_shape[0]) // 2 # (W - H) // 2: assumes W > H
         Ks = update_intrinsics(np.array(intrinsics), crop_x=crop_amount, crop_y=0)
         Ks = repeat(Ks, 'd1 d2 -> n d1 d2', n=self.num_images) # assumes all intrinsics are the same for now 
+        Ks = normalize_intrinsics(Ks, self.target_shape[0], self.target_shape[1]) # normalize intrinsics
         Ks = torch.from_numpy(Ks).float()
 
         w2cs = torch.linalg.inv(c2ws)
@@ -675,6 +693,8 @@ class MVHumanNetLoader(pl.LightningDataModule):
     def __init__(
         self,
         root_dir: str,
+        latents_dir: str,
+        num_images: int,
         batch_size: int,
         num_workers: int = 0,
         shuffle: bool = True,
@@ -685,16 +705,19 @@ class MVHumanNetLoader(pl.LightningDataModule):
         super().__init__()
         
         self.root_dir = root_dir
+        self.latents_dir = latents_dir
+        self.num_images = num_images
         self.batch_size = batch_size
         self.num_workers = num_workers
         self.shuffle = shuffle
         self.data_limit = data_limit
         self.only_include = only_include
         # Define transforms
-        self.transform = T.Compose([
-            T.Resize(image_size), # whatever final resolution we want here
-            T.ToTensor(),
-        ])
+        # self.transform = T.Compose([
+        #     T.Resize(image_size), # whatever final resolution we want here
+        #     T.ToTensor(),
+        # ])
+        self.transform = None # let corresponding Dataset handle this
 
     def setup(self, stage: Optional[str] = None):
         print("MVHumanNetLoader::setup::stage: ", stage)
@@ -702,6 +725,8 @@ class MVHumanNetLoader(pl.LightningDataModule):
             self.train_dataset = MVHumanNetDataDictWrapper(
                 MVHumanNetDataset(
                     root_dir=os.path.join(self.root_dir),
+                    latents_dir=os.path.join(self.latents_dir),
+                    num_images=self.num_images,
                     transforms=self.transform,
                     data_limit=self.data_limit,
                     only_include=self.only_include
@@ -717,6 +742,8 @@ class MVHumanNetLoader(pl.LightningDataModule):
             self.test_dataset = MVHumanNetDataDictWrapper(
                 MVHumanNetDataset(
                     root_dir=os.path.join(self.root_dir, "test"),
+                    latents_dir=os.path.join(self.latents_dir),
+                    num_images=self.num_images,
                     transforms=self.transform,
                     data_limit=self.data_limit,
                     only_include=self.only_include

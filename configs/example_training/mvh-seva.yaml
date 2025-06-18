@@ -118,11 +118,11 @@ model:
 data:
   target: seva.data.mvh_dataloader.MVHumanNetLoader
   params:
-    dataset_dir: /workspace/datasetvol/mv_captures
-    latents_dir: /workspace/datasetvol/mv_latents
+    root_dir: /workspace/datasetvol/mvhuman_data/mv_captures
+    latents_dir: /workspace/datasetvol/mvhuman_data/mv_latents
     batch_size: 1
-    num_workers: 4
-    num_images: 8
+    num_workers: 1
+    num_images: 3
     only_include: ["100001", "100002"]
 
 lightning:
