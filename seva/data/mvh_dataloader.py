@@ -374,6 +374,8 @@ class MVHumanNetDataset(Dataset):
         self.data_limit = data_limit         # TEMP -- only get the first 'data_limit' (int) subjects
         self.crop = crop
         self.adjacent_frame_sampling_prob = 0.2 # Trajectory NVS acceptance rate
+        if num_images >= 16: # LIMIT to 16 images
+            self.num_images = 16
 
         # actual data
         self.cam_params = {} # Dict[subject: (extrinsics, intrinsics, camera_scale)]
@@ -494,14 +496,18 @@ class MVHumanNetDataset(Dataset):
             intrinsics = update_intrinsics_resize(intrinsics, scale=self.pre_scale)
 
         # Sample frames indices
+        # NOTE: if num_images>16, then trajectory NVS will default to using all in rung
         if np.random.rand() <= self.adjacent_frame_sampling_prob: # for trajectory NVS
             # choose which rung of cameras to sample from (top/mid/bot)
             # this is only because these paths are the most apparently continuous
             which_rung = np.random.randint(0, len(CAMERA_RUNGS))
             rung_of_cameras = CAMERA_RUNGS[which_rung]
             images_files = [frame['image_path'] for frame in frames_info if frame['camera'] in rung_of_cameras]
-            start_idx = np.random.randint(0, len(images_files) - self.num_images) # could use torch.roll, but we'll keep it simple
-            images_idxs = np.arange(start_idx, start_idx + self.num_images)
+
+            # NOTE: currenty only uses the rungs (path on the xy plane)
+            # TODO: possibly add support for more paths (zig-zag, up-and-down, snake, etc.)
+            start_idx = np.random.randint(0, len(TOP_RUNG)) # this is 16
+            images_idxs = np.roll(np.arange(len(TOP_RUNG)), -start_idx)[:self.num_images]
         else: # for set NVS
             images_files = [frame['image_path'] for frame in frames_info] # all keyframes
             images_idxs = np.random.choice(len(images_files), self.num_images, replace=False)
@@ -571,14 +577,23 @@ class MVHumanNetDataset(Dataset):
         center_cameras(all_c2ws, c2ws)  # mean center
         scale_cameras(c2ws)
 
+        print("all_c2ws.shape: ", all_c2ws.shape)
+        print("c2ws.shape: ", c2ws.shape)
+
         # create intrinsics tensor, update intrinsics
         # TODO: accept multiple camera intrinsics (for random cropping)
         # NOTE: for preliminary fine-tune testing, we currently account for the uniform center crop
         crop_amount = (self.image_shape[1] - self.target_shape[0]) // 2 # (W - H) // 2: assumes W > H
         Ks = update_intrinsics(np.array(intrinsics), crop_x=crop_amount, crop_y=0)
+        print("Ks [before norm]: ", Ks)
+        Ks = normalize_intrinsics(Ks, self.image_shape[0], self.image_shape[1]) # normalize intrinsics (H,W)
+        print("Ks [after norm]: ", Ks)
         Ks = repeat(Ks, 'd1 d2 -> n d1 d2', n=self.num_images) # assumes all intrinsics are the same for now 
-        Ks = normalize_intrinsics(Ks, self.target_shape[0], self.target_shape[1]) # normalize intrinsics
         Ks = torch.from_numpy(Ks).float()
+
+
+        print("Ks.shape: ", Ks.shape)
+        print("Ks: ", Ks.max(), Ks.min())
 
         w2cs = torch.linalg.inv(c2ws)
         pluckers = get_plucker_coordinates(
@@ -588,6 +603,8 @@ class MVHumanNetDataset(Dataset):
             target_size=(self.target_shape[0] // self.downsample_factor, 
                          self.target_shape[1] // self.downsample_factor),
         )
+
+        print("pluckers.shape: ", pluckers.shape)
 
         concat = torch.cat( # binary mask and plcukers
             [
@@ -602,6 +619,8 @@ class MVHumanNetDataset(Dataset):
             dim=1,
         ) # (T, 6 + 1, 72, 72), where 6 is for plucker coords and 1 for binary mask
 
+        print("concat.shape: ", concat.shape)
+
         replace = torch.cat( # clean latents and binary mask
             [
                 clean_latents * self.scale_factor,
@@ -614,6 +633,8 @@ class MVHumanNetDataset(Dataset):
             ],
             dim=1,
         )
+
+        print("replace.shape: ", replace.shape)
 
         # bbox params useful for cropping
         # H, W = int(annots['height'] * self.pre_scale), int(annots['width'] * self.pre_scale) # images not yet scaled down
@@ -676,17 +697,19 @@ class MVHumanNetDataset(Dataset):
         return output_dict
 
 
-class MVHumanNetDataDictWrapper(Dataset):
-    def __init__(self, dset):
-        super().__init__()
-        self.dset = dset
+# class MVHumanNetDataDictWrapper(Dataset):
+#     def __init__(self, dset):
+#         super().__init__()
+#         self.dset = dset
 
-    def __getitem__(self, i):
-        img, K, transform_matrix = self.dset[i]
-        return {"jpg": img, "K": K, "transform_matrix": transform_matrix}
+#     def __getitem__(self, i):
+#         d_ele = self.dset[i]
+#         print("d_ele.keys(): ", d_ele.keys())
+#         exit()
+#         return {"jpg": img, "K": K, "transform_matrix": transform_matrix}
 
-    def __len__(self):
-        return len(self.dset)
+#     def __len__(self):
+#         return len(self.dset)
 
 
 class MVHumanNetLoader(pl.LightningDataModule):
@@ -722,16 +745,15 @@ class MVHumanNetLoader(pl.LightningDataModule):
     def setup(self, stage: Optional[str] = None):
         print("MVHumanNetLoader::setup::stage: ", stage)
         if stage == "fit" or stage is None:
-            self.train_dataset = MVHumanNetDataDictWrapper(
-                MVHumanNetDataset(
-                    root_dir=os.path.join(self.root_dir),
-                    latents_dir=os.path.join(self.latents_dir),
-                    num_images=self.num_images,
-                    transforms=self.transform,
-                    data_limit=self.data_limit,
-                    only_include=self.only_include
-                )
+            self.train_dataset = MVHumanNetDataset(
+                root_dir=os.path.join(self.root_dir),
+                latents_dir=os.path.join(self.latents_dir),
+                num_images=self.num_images,
+                transforms=self.transform,
+                data_limit=self.data_limit,
+                only_include=self.only_include
             )
+
             # self.val_dataset = MVHumanNetDataDictWrapper(
             #     MVHumanNetDataset(
             #         root_dir=os.path.join(self.root_dir, "val"),
@@ -739,16 +761,15 @@ class MVHumanNetLoader(pl.LightningDataModule):
             #     )
             # )
         if stage == "test" or stage is None:
-            self.test_dataset = MVHumanNetDataDictWrapper(
-                MVHumanNetDataset(
-                    root_dir=os.path.join(self.root_dir, "test"),
-                    latents_dir=os.path.join(self.latents_dir),
-                    num_images=self.num_images,
-                    transforms=self.transform,
-                    data_limit=self.data_limit,
-                    only_include=self.only_include
-                )
+            self.test_dataset = MVHumanNetDataset(
+                root_dir=os.path.join(self.root_dir, "test"),
+                latents_dir=os.path.join(self.latents_dir),
+                num_images=self.num_images,
+                transforms=self.transform,
+                data_limit=self.data_limit,
+                only_include=self.only_include
             )
+            
 
     def prepare_data(self):
         pass
