@@ -2,6 +2,7 @@ from dataclasses import dataclass, field
 
 import torch
 import torch.nn as nn
+import pytorch_lightning as pl
 
 from seva.modules.layers import (
     Downsample,
@@ -249,3 +250,32 @@ class SGMWrapper(nn.Module):
             dense_y=c["dense_vector"],
             **kwargs,
         )
+
+# wrap for wandb compatibility
+class SevaLightningModule(pl.LightningModule):
+    def __init__(self, seva_model: Seva):
+        super().__init__()
+        self.model = seva_model
+        
+    def forward(self, x, t, y, dense_y, num_frames=None):
+        return self.model(x, t, y, dense_y, num_frames)
+    
+    def log_images(self, batch, batch_idx, sample=True):
+        """log images to wandb (TODO) """
+        print("batch", batch)
+        print("batch_idx", batch_idx)
+        # x = batch["x"]
+        # t = batch["t"]
+        # y = batch["y"]
+        # dense_y = batch["dense_y"]
+        
+        # # Generate images
+        # with torch.no_grad():
+        #     output = self(x, t, y, dense_y)
+        
+        # # Return dictionary of images to log
+        # return {
+        #     "generated": output,  # Shape: (B, C, H, W)
+        #     "input": batch["input_images"] if "input_images" in batch else None,
+        #     "target": batch["target_images"] if "target_images" in batch else None
+        # }
