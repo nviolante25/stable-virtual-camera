@@ -297,8 +297,11 @@ class DiffusionEngine(pl.LightningModule):
         Defines heuristics to log different conditionings.
         These can be lists of strings (text-to-image), tensors, ints, ...
         """
-        print(batch[self.input_key].shape[2:])
-        image_h, image_w = batch[self.input_key].shape[2:]
+        # [batch_size, num_images, channels, height, width]
+        input_tensor = batch[self.input_key]
+        image_h, image_w = input_tensor.shape[-2:]
+            
+        print(f"Input tensor shape: {input_tensor.shape}, extracting H={image_h}, W={image_w}")
         log = dict()
 
         for embedder in self.conditioner.embedders:
@@ -365,8 +368,22 @@ class DiffusionEngine(pl.LightningModule):
         x = x.to(self.device)[:N]
         log["inputs"] = x
         z = self.encode_first_stage(x)
-        log["reconstructions"] = self.decode_first_stage(z)
-        log.update(self.log_conditionings(batch, N))
+        reconstructions = self.decode_first_stage(z)
+
+        print("X SHAPE: ", x.shape)
+        print("RECONSTRUCTIONS SHAPE: ", reconstructions.shape)
+        
+        # Handle SEVA multi-view reconstructions: reshape [batch_size*num_images, C, H, W] -> [batch_size, num_images, C, H, W]
+        if reconstructions.dim() == 4 and reconstructions.shape[0] == x.shape[0] * x.shape[1]:
+            # This is a SEVA multi-view output
+            batch_size = x.shape[0]
+            num_images = x.shape[1]
+            reconstructions = reconstructions.view(batch_size, num_images, *reconstructions.shape[1:])
+            log["reconstructions"] = reconstructions
+        else:
+            log["reconstructions"] = reconstructions
+            
+        # log.update(self.log_conditionings(batch, N))
 
         for k in c:
             if isinstance(c[k], torch.Tensor):
@@ -378,5 +395,15 @@ class DiffusionEngine(pl.LightningModule):
                     c, shape=z.shape[1:], uc=uc, batch_size=N, **sampling_kwargs
                 )
             samples = self.decode_first_stage(samples)
-            log["samples"] = samples
+            
+            # Handle SEVA multi-view outputs: reshape [batch_size*num_images, C, H, W] -> [batch_size, num_images, C, H, W]
+            if samples.dim() == 4 and samples.shape[0] == x.shape[0] * x.shape[1]:
+                # This is a SEVA multi-view output
+                batch_size = x.shape[0]
+                num_images = x.shape[1]
+                samples = samples.view(batch_size, num_images, *samples.shape[1:])
+                log["samples"] = samples
+            else:
+                log["samples"] = samples
+        print("log_images end, keys: ", log.keys())
         return log

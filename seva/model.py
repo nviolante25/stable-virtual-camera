@@ -231,13 +231,12 @@ class Seva(nn.Module):
                 num_frames=num_frames,
             )
         h = h.type(x.dtype)
-        return self.out(h)
-
-# TODO: wrap @main.py current MODEL SGMWrapper(LightningModule(SevaLoRAWrapper))
+        print("SEVA OUTPUT SHAPE: ", self.out(h).shape)
+        return self.out(h) # [B*num_images, C=4, H=72, W=72]
 
 # for compatibility with SGM
 class SGMWrapper(nn.Module):
-    def __init__(self, module: SevaLightningModule): # or SevaLoRAWrappers
+    def __init__(self, module: Seva): # or SevaLoRAWrappers
         super().__init__()
         self.module = module
 
@@ -253,28 +252,29 @@ class SGMWrapper(nn.Module):
             **kwargs,
         )
 
-# wrap for wandb compatibility
-class SevaLightningModule(pl.LightningModule):
-    def __init__(self, seva_model: SevaLoRAWrapper):
-        super().__init__()
-        self.model = seva_model
+
+# class SevaLightningModule(pl.LightningModule):
+#     def __init__(self, seva_model: Seva):
+#         super().__init__()
+#         self.model = seva_model
         
-    def forward(self, x, t, y, dense_y, num_frames=None):
-        return self.model(x, t, y, dense_y, num_frames)
+#     def forward(self, x, t, y, dense_y, num_frames=None):
+#         return self.model(x, t, y, dense_y, num_frames)
 
-    @rank_zero_only
-    def log_images(self, input_tensor, output_tensor, target_tensor):
-        print("within SevaLightningModule::log_images!")
-        # Assume [B,C,H,W] and normalize to [0,1] for wandb.Image
-        images = []
+    # this is never used or reached
+    # @rank_zero_only
+    # def log_images(self, input_tensor, output_tensor, target_tensor):
+    #     print("within SevaLightningModule::log_images!")
+    #     # Assume [B,C,H,W] and normalize to [0,1] for wandb.Image
+    #     images = []
 
-        for i in range(min(4, input_tensor.size(0))):  # limit to first 4 images
-            img_grid = torchvision.utils.make_grid([
-                input_tensor[i].detach().cpu(),
-                output_tensor[i].detach().cpu(),
-                target_tensor[i].detach().cpu(),
-            ], nrow=3, normalize=True, scale_each=True)
+    #     for i in range(min(4, input_tensor.size(0))):  # limit to first 4 images
+    #         img_grid = torchvision.utils.make_grid([
+    #             input_tensor[i].detach().cpu(),
+    #             output_tensor[i].detach().cpu(),
+    #             target_tensor[i].detach().cpu(),
+    #         ], nrow=3, normalize=True, scale_each=True)
 
-            images.append(wandb.Image(img_grid, caption=f"Sample {i}"))
+    #         images.append(wandb.Image(img_grid, caption=f"Sample {i}"))
 
-        self.logger.experiment.log({"val/reconstructions": images, "global_step": self.global_step})
+    #     self.logger.experiment.log({"val/reconstructions": images, "global_step": self.global_step})
