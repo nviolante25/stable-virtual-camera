@@ -370,6 +370,7 @@ class ImageLogger(Callback):
                 # TODO: support wandb
             else:
                 print("ImageLogger::log_local:in local log_local:not heatmap:")
+                # SEVA multi-view tensors are already flattened in log_img to [N, C, H, W]
                 grid = torchvision.utils.make_grid(images[k], nrow=4)
                 if self.rescale:
                     grid = (grid + 1.0) / 2.0  # -1,1 -> 0,1; c,h,w
@@ -398,7 +399,7 @@ class ImageLogger(Callback):
                     )
 
     @rank_zero_only
-    def log_img(self, pl_module, batch, batch_idx, split="train"):
+    def log_img(self, pl_module, batch, batch_idx, split="train"): #pl_module: DiffusionEngine
         print(f"ImageLogger::LOG_IMG inside function from {self.__class__.__name__}")
         check_idx = batch_idx if self.log_on_batch_idx else pl_module.global_step
 
@@ -430,10 +431,20 @@ class ImageLogger(Callback):
             print("AFTER LOGGING")
 
             for k in images:
-                N = min(images[k].shape[0], self.max_images)
-                if not isheatmap(images[k]):
-                    images[k] = images[k][:N]
                 if isinstance(images[k], torch.Tensor):
+                    # Handle SEVA multi-view tensors: [batch_size, num_images, C, H, W]
+                    if images[k].dim() == 5:
+                        batch_size, num_images = images[k].shape[:2]
+                        total_images = batch_size * num_images
+                        N = min(total_images, self.max_images)
+                        # Flatten to [batch_size*num_images, C, H, W] for easier slicing
+                        images[k] = images[k].view(total_images, *images[k].shape[2:])
+                        images[k] = images[k][:N]
+                    else:
+                        N = min(images[k].shape[0], self.max_images)
+                        if not isheatmap(images[k]):
+                            images[k] = images[k][:N]
+                    
                     images[k] = images[k].detach().float().cpu()
                     if self.clamp and not isheatmap(images[k]):
                         images[k] = torch.clamp(images[k], -1.0, 1.0)
@@ -685,7 +696,7 @@ if __name__ == "__main__":
         lightning_config.trainer = trainer_config
 
         # model
-        model = instantiate_from_config(config.model)
+        model = instantiate_from_config(config.model) # DiffusionEngine
 
         # trainer and callbacks
         trainer_kwargs = dict()
@@ -844,10 +855,10 @@ if __name__ == "__main__":
             trainer_kwargs["plugins"] = list()
 
         # cmd line trainer args (which are in trainer_opt) have always priority over config-trainer-args (which are in trainer_kwargs)
-        trainer_opt = vars(trainer_opt)
+        trainer_opt = vars(trainer_opt) # from trainer in yaml
         trainer_kwargs = {
             key: val for key, val in trainer_kwargs.items() if key not in trainer_opt
-        }
+        } # logger, strategy, callbacks, etc.
         trainer = Trainer(**trainer_opt, **trainer_kwargs)
 
         trainer.logdir = logdir  ###
@@ -899,7 +910,7 @@ if __name__ == "__main__":
             print(f"Setting learning rate to {model.learning_rate:.2e}")
 
         # allow checkpointing via USR1
-        def melk(*args, **kwargs):
+        def melk(*args, **kwargs): # emergency checkpointing
             # run all checkpoint hooks
             if trainer.global_rank == 0:
                 print("Summoning checkpoint.")
@@ -909,7 +920,7 @@ if __name__ == "__main__":
                     ckpt_path = os.path.join(ckptdir, melk_ckpt_name)
                 trainer.save_checkpoint(ckpt_path)
 
-        def divein(*args, **kwargs):
+        def divein(*args, **kwargs): # emergency debugger
             if trainer.global_rank == 0:
                 import pudb
 

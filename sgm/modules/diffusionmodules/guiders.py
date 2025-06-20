@@ -34,7 +34,7 @@ class VanillaCFG(Guider):
         c_out = dict()
 
         for k in c:
-            if k in ["vector", "crossattn", "concat", "mask", "plucker"]:
+            if k in ["vector", "crossattn", "concat", "mask", "plucker", "replace"]:
                 c_out[k] = torch.cat((uc[k], c[k]), 0)
             else:
                 assert c[k] == uc[k]

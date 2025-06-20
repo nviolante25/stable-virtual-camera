@@ -260,9 +260,9 @@ class DiffusionEngine(pl.LightningModule):
         for embedder in self.conditioner.embedders:
             if embedder.is_trainable:
                 params = params + list(embedder.parameters())
-        opt = self.instantiate_optimizer_from_config(params, lr, self.optimizer_config)
+        opt = self.instantiate_optimizer_from_config(params, lr, self.optimizer_config) # AdamW
         if self.scheduler_config is not None:
-            scheduler = instantiate_from_config(self.scheduler_config)
+            scheduler = instantiate_from_config(self.scheduler_config) # LambdaLinearScheduler
             print("Setting up LambdaLR scheduler...")
             scheduler = [
                 {
@@ -343,7 +343,7 @@ class DiffusionEngine(pl.LightningModule):
         ucg_keys: List[str] = None,
         **kwargs,
     ) -> Dict:
-        conditioner_input_keys = [e.input_key for e in self.conditioner.embedders]
+        conditioner_input_keys = [e.input_key for e in self.conditioner.embedders] # plucker, concat, replace, mask, None
         if ucg_keys:
             assert all(map(lambda x: x in conditioner_input_keys, ucg_keys)), (
                 "Each defined ucg key for sampling must be in the provided conditioner input keys,"
@@ -353,7 +353,7 @@ class DiffusionEngine(pl.LightningModule):
             ucg_keys = conditioner_input_keys
         log = dict()
 
-        x = self.get_input(batch)
+        x = self.get_input(batch) # clean_latent
 
         c, uc = self.conditioner.get_unconditional_conditioning(
             batch,
