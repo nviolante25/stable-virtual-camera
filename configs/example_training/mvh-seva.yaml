@@ -120,9 +120,9 @@ data:
   params:
     root_dir: /workspace/datasetvol/mvhuman_data/mv_captures
     latents_dir: /workspace/datasetvol/mvhuman_data/mv_latents
-    batch_size: 1
+    batch_size: 3
     num_workers: 1
-    num_images: 3
+    num_images: 8
     only_include: ["100001", "100002"]
 
 lightning:
@@ -140,7 +140,7 @@ lightning:
       params:
         disabled: False
         enable_autocast: False
-        batch_frequency: 1000
+        batch_frequency: 50
         max_images: 8
         increase_log_steps: True
         log_first_step: False

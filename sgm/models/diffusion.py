@@ -297,6 +297,7 @@ class DiffusionEngine(pl.LightningModule):
         Defines heuristics to log different conditionings.
         These can be lists of strings (text-to-image), tensors, ints, ...
         """
+        print(batch[self.input_key].shape[2:])
         image_h, image_w = batch[self.input_key].shape[2:]
         log = dict()
 

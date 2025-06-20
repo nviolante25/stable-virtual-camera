@@ -399,21 +399,16 @@ class ImageLogger(Callback):
 
     @rank_zero_only
     def log_img(self, pl_module, batch, batch_idx, split="train"):
-        print("ImageLogger::LOG_IMG inside function!")
+        print(f"ImageLogger::LOG_IMG inside function from {self.__class__.__name__}")
         check_idx = batch_idx if self.log_on_batch_idx else pl_module.global_step
-        print("checking if statements")
-        print(self.check_frequency(check_idx))
-        print(hasattr(pl_module, "log_images"))
-        print(callable(pl_module.log_images))
-        print(self.max_images > 0)
+
         if (
             self.check_frequency(check_idx)
             and hasattr(pl_module, "log_images")  # batch_idx % self.batch_freq == 0
             and callable(pl_module.log_images)
-            and
-            # batch_idx > 5 and
-            self.max_images > 0
+            and self.max_images > 0
         ):
+            print("WITHIN LOG_IMG IF STATEMENT")
             logger = type(pl_module.logger)
             is_train = pl_module.training
             if is_train:
@@ -424,12 +419,15 @@ class ImageLogger(Callback):
                 "dtype": torch.get_autocast_gpu_dtype(),
                 "cache_enabled": torch.is_autocast_cache_enabled(),
             }
+            print("BEFORE logging!")
             with torch.no_grad(), torch.cuda.amp.autocast(**gpu_autocast_kwargs):
                 # this sholud be where images are logged!
                 print("ImageLogger::Logging images")
                 images = pl_module.log_images(
                     batch, split=split, **self.log_images_kwargs
                 )
+
+            print("AFTER LOGGING")
 
             for k in images:
                 N = min(images[k].shape[0], self.max_images)
@@ -471,7 +469,7 @@ class ImageLogger(Callback):
     @rank_zero_only
     def on_train_batch_end(self, trainer, pl_module, outputs, batch, batch_idx):
         if not self.disabled and (pl_module.global_step > 0 or self.log_first_step):
-            # self.log_img(pl_module, batch, batch_idx, split="train")
+            self.log_img(pl_module, batch, batch_idx, split="train")
             pass
 
     @rank_zero_only

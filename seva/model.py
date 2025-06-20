@@ -3,6 +3,7 @@ from dataclasses import dataclass, field
 import torch
 import torch.nn as nn
 import pytorch_lightning as pl
+from pytorch_lightning.utilities import rank_zero_only
 
 from seva.modules.layers import (
     Downsample,
@@ -232,10 +233,11 @@ class Seva(nn.Module):
         h = h.type(x.dtype)
         return self.out(h)
 
+# TODO: wrap @main.py current MODEL SGMWrapper(LightningModule(SevaLoRAWrapper))
 
 # for compatibility with SGM
 class SGMWrapper(nn.Module):
-    def __init__(self, module: Seva): # or SevaLoRAWrappers
+    def __init__(self, module: SevaLightningModule): # or SevaLoRAWrappers
         super().__init__()
         self.module = module
 
@@ -253,29 +255,26 @@ class SGMWrapper(nn.Module):
 
 # wrap for wandb compatibility
 class SevaLightningModule(pl.LightningModule):
-    def __init__(self, seva_model: Seva):
+    def __init__(self, seva_model: SevaLoRAWrapper):
         super().__init__()
         self.model = seva_model
         
     def forward(self, x, t, y, dense_y, num_frames=None):
         return self.model(x, t, y, dense_y, num_frames)
-    
-    def log_images(self, batch, batch_idx, sample=True):
-        """log images to wandb (TODO) """
-        print("batch", batch)
-        print("batch_idx", batch_idx)
-        # x = batch["x"]
-        # t = batch["t"]
-        # y = batch["y"]
-        # dense_y = batch["dense_y"]
-        
-        # # Generate images
-        # with torch.no_grad():
-        #     output = self(x, t, y, dense_y)
-        
-        # # Return dictionary of images to log
-        # return {
-        #     "generated": output,  # Shape: (B, C, H, W)
-        #     "input": batch["input_images"] if "input_images" in batch else None,
-        #     "target": batch["target_images"] if "target_images" in batch else None
-        # }
+
+    @rank_zero_only
+    def log_images(self, input_tensor, output_tensor, target_tensor):
+        print("within SevaLightningModule::log_images!")
+        # Assume [B,C,H,W] and normalize to [0,1] for wandb.Image
+        images = []
+
+        for i in range(min(4, input_tensor.size(0))):  # limit to first 4 images
+            img_grid = torchvision.utils.make_grid([
+                input_tensor[i].detach().cpu(),
+                output_tensor[i].detach().cpu(),
+                target_tensor[i].detach().cpu(),
+            ], nrow=3, normalize=True, scale_each=True)
+
+            images.append(wandb.Image(img_grid, caption=f"Sample {i}"))
+
+        self.logger.experiment.log({"val/reconstructions": images, "global_step": self.global_step})

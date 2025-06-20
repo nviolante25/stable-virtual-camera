@@ -514,22 +514,22 @@ class MVHumanNetDataset(Dataset):
 
         images_files = [images_files[i] for i in images_idxs]
 
-        print("images_files: ", len(images_files))
-        print("images_dir: ", self.root_dir)
-        print("latents_dir [before]: ", self.latents_dir)
+        # print("images_files: ", len(images_files))
+        # print("images_dir: ", self.root_dir)
+        # print("latents_dir [before]: ", self.latents_dir)
 
         # load latents
         if self.latents_dir is not None:
             latents_dir = subject_path.replace(self.root_dir, self.latents_dir)
             latents_dir = os.path.join(latents_dir, "images_lr")
             sample_cameras = [os.path.join(latents_dir, frames_info[i]['camera']) for i in images_idxs]
-            print("sample_cameras: ", sample_cameras)
-            print("latents_dir [after]: ", latents_dir)
+            # print("sample_cameras: ", sample_cameras)
+            # print("latents_dir [after]: ", latents_dir)
 
             latents_files = sorted([os.path.join(sample_cam_dir, f"{timestep}_latent.npz") for sample_cam_dir in sample_cameras]) # changed to accept npz files only
-            print("latent_files number: ", len(latents_files))
+            # print("latent_files number: ", len(latents_files))
             clean_latents = torch.stack([torch.from_numpy(np.load(latents_files[i])['latent']) for i in range(len(latents_files))])
-            print(f"Loaded clean_latents shape: {clean_latents.shape}")
+            # print(f"Loaded clean_latents shape: {clean_latents.shape}")
         else:
             # currently, we REQUIRE precomputed latents, so we throw error
             # (possibly add on-the-fly computation later)
@@ -550,13 +550,13 @@ class MVHumanNetDataset(Dataset):
             masked_image = self.transform(masked_image) # images converted to square, [-1, 1] normalization
             frames[i] = masked_image
 
-        print("frames.shape: ", frames.shape)
+        # print("frames.shape: ", frames.shape)
         
         # Sample input and target frames (from the images we have now)
         num_input_frames = np.random.randint(1, self.num_images)  # Randomly select number of input frames
         input_frames_indices = np.random.choice(self.num_images, num_input_frames, replace=False) # Randomly select the input frames
 
-        print("input_frames_indices: ", input_frames_indices)
+        # print("input_frames_indices: ", input_frames_indices)
 
         # Create masks (for above 1: inputs/ 0: targets)
         input_frames_mask = torch.zeros(self.num_images, dtype=torch.bool)
@@ -577,23 +577,23 @@ class MVHumanNetDataset(Dataset):
         center_cameras(all_c2ws, c2ws)  # mean center
         scale_cameras(c2ws)
 
-        print("all_c2ws.shape: ", all_c2ws.shape)
-        print("c2ws.shape: ", c2ws.shape)
+        # print("all_c2ws.shape: ", all_c2ws.shape)
+        # print("c2ws.shape: ", c2ws.shape)
 
         # create intrinsics tensor, update intrinsics
         # TODO: accept multiple camera intrinsics (for random cropping)
         # NOTE: for preliminary fine-tune testing, we currently account for the uniform center crop
         crop_amount = (self.image_shape[1] - self.target_shape[0]) // 2 # (W - H) // 2: assumes W > H
         Ks = update_intrinsics(np.array(intrinsics), crop_x=crop_amount, crop_y=0)
-        print("Ks [before norm]: ", Ks)
+        # print("Ks [before norm]: ", Ks)
         Ks = normalize_intrinsics(Ks, self.image_shape[0], self.image_shape[1]) # normalize intrinsics (H,W)
-        print("Ks [after norm]: ", Ks)
+        # print("Ks [after norm]: ", Ks)
         Ks = repeat(Ks, 'd1 d2 -> n d1 d2', n=self.num_images) # assumes all intrinsics are the same for now 
         Ks = torch.from_numpy(Ks).float()
 
 
-        print("Ks.shape: ", Ks.shape)
-        print("Ks: ", Ks.max(), Ks.min())
+        # print("Ks.shape: ", Ks.shape)
+        # print("Ks: ", Ks.max(), Ks.min())
 
         w2cs = torch.linalg.inv(c2ws)
         pluckers = get_plucker_coordinates(
@@ -604,7 +604,7 @@ class MVHumanNetDataset(Dataset):
                          self.target_shape[1] // self.downsample_factor),
         )
 
-        print("pluckers.shape: ", pluckers.shape)
+        # print("pluckers.shape: ", pluckers.shape)
 
         concat = torch.cat( # binary mask and plcukers
             [
@@ -619,7 +619,7 @@ class MVHumanNetDataset(Dataset):
             dim=1,
         ) # (T, 6 + 1, 72, 72), where 6 is for plucker coords and 1 for binary mask
 
-        print("concat.shape: ", concat.shape)
+        # print("concat.shape: ", concat.shape)
 
         replace = torch.cat( # clean latents and binary mask
             [
@@ -634,7 +634,7 @@ class MVHumanNetDataset(Dataset):
             dim=1,
         )
 
-        print("replace.shape: ", replace.shape)
+        # print("replace.shape: ", replace.shape)
 
         # bbox params useful for cropping
         # H, W = int(annots['height'] * self.pre_scale), int(annots['width'] * self.pre_scale) # images not yet scaled down
