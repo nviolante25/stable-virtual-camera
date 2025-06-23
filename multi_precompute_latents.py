@@ -267,7 +267,7 @@ class VAEWorker:
                 latents = self.process_batch(batch_images)
                 
                 # Save latents in parallel
-                with ThreadPoolExecutor(max_workers=4) as executor:
+                with ThreadPoolExecutor(max_workers=self.args.save_workers) as executor:
                     executor.map(self._save_latent, batch_image_paths, latents)
                 
                 # Log performance
@@ -363,8 +363,10 @@ def main():
                        help='Overwrite existing latents')
     parser.add_argument('--batch_size', type=int, default=16,
                        help='Batch size for encoding latents')
-    parser.add_argument('--io_workers', type=int, default=16,
+    parser.add_argument('--io_workers', type=int, default=12,
                        help='Number of I/O workers for loading images/masks')
+    parser.add_argument('--save_workers', type=int, default=4,
+                       help='Number of workers for saving latents (total threads = io_workers + save_workers)')
     
     args = parser.parse_args()
     
