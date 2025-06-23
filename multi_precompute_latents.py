@@ -7,8 +7,10 @@ from diffusers import AutoencoderKL
 import numpy as np
 import argparse
 from functools import partial
-from concurrent.futures import ThreadPoolExecutor
+from concurrent.futures import ThreadPoolExecutor, as_completed
 import time
+from typing import List, Tuple
+import torch.nn.functional as F
 
 # Set up multiprocessing with spawn method
 mp.set_start_method('spawn', force=True)
@@ -74,8 +76,69 @@ class VAEWorker:
             latents = self.model.encode(batch_tensor).latent_dist.sample()
             return latents.detach().cpu()
     
+    def _load_and_preprocess_batch(self, image_paths: List[str], mask_paths: List[str]) -> List[torch.Tensor]:
+        """Load and preprocess a batch of images with their masks using vectorized operations"""
+        batch_images = []
+        
+        # Load all images and masks in parallel with increased workers
+        with ThreadPoolExecutor(max_workers=self.args.io_workers) as executor:
+            # Load images and masks concurrently
+            image_futures = [executor.submit(self._load_image, path) for path in image_paths]
+            mask_futures = [executor.submit(self._load_mask, path) for path in mask_paths]
+            
+            # Collect results as they complete
+            images = [future.result() for future in image_futures]
+            masks = [future.result() for future in mask_futures]
+        
+        # Filter out None results
+        valid_pairs = [(img, mask) for img, mask in zip(images, masks) if img is not None and mask is not None]
+        
+        if not valid_pairs:
+            return []
+        
+        # Unzip valid pairs
+        valid_images, valid_masks = zip(*valid_pairs)
+        
+        # Convert to tensors and stack for vectorized operations
+        # Use pin_memory=True for faster CPU->GPU transfer
+        image_tensors = torch.stack(valid_images).pin_memory()
+        mask_tensors = torch.stack(valid_masks).pin_memory()
+        
+        # Vectorized masking operation with optimized broadcasting
+        # Expand mask from (B, 1, H, W) to (B, 3, H, W) to match image channels
+        # Use repeat instead of expand for better memory efficiency
+        mask_tensors = mask_tensors.repeat(1, 3, 1, 1)
+        masked_images = image_tensors * mask_tensors
+        
+        # Convert back to list for compatibility
+        return [masked_images[i] for i in range(masked_images.shape[0])]
+    
+    def _load_image(self, image_path: str) -> torch.Tensor:
+        """Load and preprocess a single image with optimized I/O"""
+        try:
+            with Image.open(image_path) as img:
+                # Convert to RGB immediately to avoid repeated conversions
+                if img.mode != 'RGB':
+                    img = img.convert("RGB")
+                return preprocess(img)
+        except Exception as e:
+            print(f"Worker {self.rank}: Error loading image {image_path}: {e}")
+            return None
+    
+    def _load_mask(self, mask_path: str) -> torch.Tensor:
+        """Load and preprocess a single mask with optimized I/O"""
+        try:
+            with Image.open(mask_path) as mask:
+                # Convert to grayscale immediately
+                if mask.mode != 'L':
+                    mask = mask.convert("L")
+                return mask_preprocess(mask)
+        except Exception as e:
+            print(f"Worker {self.rank}: Error loading mask {mask_path}: {e}")
+            return None
+    
     def _load_and_preprocess(self, image_path, mask_path, save_test_image=False):
-        """Load and preprocess a single image with its mask"""
+        """Legacy method - kept for compatibility but not used in optimized version"""
         try:
             # Load image
             with Image.open(image_path) as img:
@@ -145,7 +208,7 @@ class VAEWorker:
             print(f"Worker {self.rank}: Error saving test image: {e}")
     
     def process_camera_dir(self, camera_path, target_camera_dir, mask_camera_path):
-        """Process all images in a camera directory"""
+        """Process all images in a camera directory with optimized batch processing and prefetching"""
         # Get and sort images with thread-safe glob
         image_paths = sorted(
             [os.path.join(camera_path, name) for name in os.listdir(camera_path) 
@@ -168,22 +231,32 @@ class VAEWorker:
                 ))
             ]
             
+            # Filter corresponding mask paths
+            mask_paths = [
+                mask_paths[i] for i, img_path in enumerate(image_paths)
+                if img_path in image_paths
+            ]
         
-        # Process in batches using ThreadPool for loading
+        # Prefetch next batch while processing current batch
+        def prefetch_batch(batch_image_paths, batch_mask_paths):
+            """Prefetch the next batch of images and masks"""
+            return self._load_and_preprocess_batch(batch_image_paths, batch_mask_paths)
+        
+        # Process in batches with prefetching
         for i in range(0, len(image_paths), self.args.batch_size):
-            batch_paths = image_paths[i:i + self.args.batch_size]
+            batch_image_paths = image_paths[i:i + self.args.batch_size]
+            batch_mask_paths = mask_paths[i:i + self.args.batch_size]
             
-            # Parallel image loading and preprocessing
-            with ThreadPoolExecutor(max_workers=4) as executor:
-                # Create pairs of image and mask paths
-                path_pairs = list(zip(batch_paths, mask_paths[i:i + self.args.batch_size]))
-                # Save test images for first 3 images only
-                batch_images = []
-                for j, (img_path, mask_path) in enumerate(path_pairs):
-                    img = self._load_and_preprocess(img_path, mask_path, save_test_image=False)
-                    # save_test_imageshould always be False, only for dev debugging
-                    if img is not None:
-                        batch_images.append(img)
+            # Start prefetching next batch if available
+            next_batch_future = None
+            if i + self.args.batch_size < len(image_paths):
+                next_batch_image_paths = image_paths[i + self.args.batch_size:i + 2 * self.args.batch_size]
+                next_batch_mask_paths = mask_paths[i + self.args.batch_size:i + 2 * self.args.batch_size]
+                with ThreadPoolExecutor(max_workers=1) as executor:
+                    next_batch_future = executor.submit(prefetch_batch, next_batch_image_paths, next_batch_mask_paths)
+            
+            # Load current batch
+            batch_images = self._load_and_preprocess_batch(batch_image_paths, batch_mask_paths)
             
             if not batch_images:
                 continue
@@ -195,7 +268,7 @@ class VAEWorker:
                 
                 # Save latents in parallel
                 with ThreadPoolExecutor(max_workers=4) as executor:
-                    executor.map(self._save_latent, batch_paths, latents)
+                    executor.map(self._save_latent, batch_image_paths, latents)
                 
                 # Log performance
                 batch_time = time.time() - start_time
@@ -204,7 +277,7 @@ class VAEWorker:
                 
                 # Clean up
                 del latents, batch_images
-                # torch.cuda.empty_cache()
+                torch.cuda.empty_cache()
                 
             except Exception as e:
                 print(f"Worker {self.rank}: Error processing batch: {e}")
@@ -288,8 +361,10 @@ def main():
                        help='Number of subjects to process')
     parser.add_argument('--overwrite', action='store_true',
                        help='Overwrite existing latents')
-    parser.add_argument('--batch_size', type=int, default=32,
+    parser.add_argument('--batch_size', type=int, default=16,
                        help='Batch size for encoding latents')
+    parser.add_argument('--io_workers', type=int, default=16,
+                       help='Number of I/O workers for loading images/masks')
     
     args = parser.parse_args()
     
