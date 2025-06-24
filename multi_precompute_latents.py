@@ -109,6 +109,8 @@ class VAEWorker:
             else:
                 print("WARNING! Unexpected skippage of a timestep within the dataset!!!")
                 print("NOTE: This is serious, as it will desync latent assignments!!!")
+                with open("unexpected_error_log.txt", "a") as errfile:
+                    errfile.write(f"[Error] Skipped timestep!")
         
         if not valid_pairs:
             return []
