@@ -56,7 +56,9 @@ class VAEWorker:
         # Initialize model on this GPU
         self.model = AutoencoderKL.from_pretrained(
             "stabilityai/stable-diffusion-2-1-base", 
-            subfolder="vae"
+            subfolder="vae",
+            force_download=False,
+            low_cpu_mem_usage=False,
         ).to(self.device)
         self.model.eval()
 
@@ -465,6 +467,25 @@ def worker(rank, world_size, args, subject_chunks):
     finally:
         worker.shutdown_worker_executors()
 
+
+def preload_model():
+    """Pre-download the VAE model to avoid concurrent downloads."""
+    print("Pre-downloading VAE model...")
+    try:
+        model = AutoencoderKL.from_pretrained(
+            "stabilityai/stable-diffusion-2-1-base",
+            subfolder="vae",
+            force_download=False,
+            low_cpu_mem_usage=False,
+        )
+        print("VAE model downloaded successfully")
+        del model
+        return True
+    except Exception as e:
+        print(f"Failed to download VAE model: {e}")
+        return False
+
+
 def main():
     parser = argparse.ArgumentParser(description='Precompute latents from images')
     parser.add_argument('--dataset_dir', type=str, default="/workspace/datasetvol/mvhuman_data/mv_captures",
@@ -507,6 +528,8 @@ def main():
     # Ensure we have enough chunks for all GPUs
     while len(subject_chunks) < world_size:
         subject_chunks.append([])
+
+    preload_model()
     
     # Launch processes
     mp.spawn(
