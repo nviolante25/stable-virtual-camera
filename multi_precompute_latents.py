@@ -435,10 +435,20 @@ class VAEWorker:
                 print(f"Worker {self.rank}: Skipping {subject} - already exists")
                 continue
                 
+            # Create temporary file to indicate processing is in progress
+            tmp_file = os.path.join(target_subject_path, ".processing")
+            if os.path.exists(tmp_file):
+                print(f"Worker {self.rank}: Skipping {subject} - being processed by another worker. ")
+                continue
+
+            with open(tmp_file, 'w') as f:
+                f.write(str(os.getpid()))
+
             print(f"Worker {self.rank}: Processing subject {subject}")
             
-            # Create directories
+            # Create directory
             os.makedirs(target_subject_path, exist_ok=True)
+
             # target_images_dir = os.path.join(target_subject_path, "images_lr")
             # os.makedirs(target_images_dir, exist_ok=True)
             
@@ -480,11 +490,13 @@ class VAEWorker:
             try:
                 if subject_latents_dict:
                     np.savez_compressed(os.path.join(target_subject_path, f"{subject}.npz"), **subject_latents_dict)
+                    os.remove(tmp_file) # remove .processing indicator file
                     del subject_latents_dict
                     print(f"Worker {self.rank}: Finished subject {subject}.")
                 else:
                     print(f"Worker {self.rank}: No latents processed for subject {subject}")
             except Exception as e:
+                os.remove(tmp_file)
                 print(f"Worker {self.rank}: Error saving subject NPZ for {subject}: {e}")
 
         print("Finished processing all subjects.")
