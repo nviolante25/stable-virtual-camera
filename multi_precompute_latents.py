@@ -20,6 +20,36 @@ mp.set_start_method('spawn', force=True)
 IMAGE_SIZE = 576
 CENTER_CROP_SIZE = 1500
 
+# Model configuration
+MODEL_ID = "stabilityai/stable-diffusion-2-1-base"
+MODEL_SUBFOLDER = "vae"
+LOCAL_MODEL_PATH = "./local_vae_model"
+
+def download_model_locally():
+    """Download the VAE model from HuggingFace and save it locally"""
+    if os.path.exists(LOCAL_MODEL_PATH):
+        print(f"Model already exists at {LOCAL_MODEL_PATH}")
+        return LOCAL_MODEL_PATH
+    
+    print(f"Downloading VAE model from {MODEL_ID}...")
+    try:
+        model = AutoencoderKL.from_pretrained(
+            MODEL_ID,
+            subfolder=MODEL_SUBFOLDER,
+            force_download=True,
+            low_cpu_mem_usage=False,
+        )
+        
+        # Save the model locally
+        os.makedirs(LOCAL_MODEL_PATH, exist_ok=True)
+        model.save_pretrained(LOCAL_MODEL_PATH)
+        print(f"Model saved to {LOCAL_MODEL_PATH}")
+        return LOCAL_MODEL_PATH
+        
+    except Exception as e:
+        print(f"Error downloading model: {e}")
+        raise
+
 # Define image preprocessing with optimized operations
 # NOTE: for now, center crop, but afterwards, should do random crop (for SimVS)
 preprocess = transforms.Compose([
@@ -53,14 +83,15 @@ class VAEWorker:
         self.args = args
         self.device = f"cuda:{rank}"
         
-        # Initialize model on this GPU
+        # Initialize model on this GPU from local path
+        print(f"Worker {self.rank}: Loading VAE model from local path...")
         self.model = AutoencoderKL.from_pretrained(
-            "stabilityai/stable-diffusion-2-1-base", 
-            subfolder="vae",
+            LOCAL_MODEL_PATH,
             force_download=False,
             low_cpu_mem_usage=False,
         ).to(self.device)
         self.model.eval()
+        print(f"Worker {self.rank}: VAE model loaded successfully")
 
         # Initialize I/O executor for prefetching 
         self.prefetch_exec = ThreadPoolExecutor(max_workers=1)
@@ -468,24 +499,6 @@ def worker(rank, world_size, args, subject_chunks):
         worker.shutdown_worker_executors()
 
 
-def preload_model():
-    """Pre-download the VAE model to avoid concurrent downloads."""
-    print("Pre-downloading VAE model...")
-    try:
-        model = AutoencoderKL.from_pretrained(
-            "stabilityai/stable-diffusion-2-1-base",
-            subfolder="vae",
-            force_download=False,
-            low_cpu_mem_usage=False,
-        )
-        print("VAE model downloaded successfully")
-        del model
-        return True
-    except Exception as e:
-        print(f"Failed to download VAE model: {e}")
-        return False
-
-
 def main():
     parser = argparse.ArgumentParser(description='Precompute latents from images')
     parser.add_argument('--dataset_dir', type=str, default="/workspace/datasetvol/mvhuman_data/mv_captures",
@@ -502,8 +515,23 @@ def main():
                        help='Number of I/O workers for loading images/masks')
     parser.add_argument('--save_workers', type=int, default=1,
                        help='Number of workers for saving latents (total threads = io_workers + save_workers)')
+    parser.add_argument('--download_model', action='store_true',
+                       help='Download model from HuggingFace before processing')
+    parser.add_argument('--model_path', type=str, default="./local_vae_model",
+                       help='Path to local model directory')
     
     args = parser.parse_args()
+    
+    # Update global model path if specified
+    global LOCAL_MODEL_PATH
+    LOCAL_MODEL_PATH = args.model_path
+    
+    # Download model if requested or if it doesn't exist
+    if args.download_model or not os.path.exists(LOCAL_MODEL_PATH):
+        print("Model download requested or model not found locally")
+        download_model_locally()
+    else:
+        print(f"Using existing model at {LOCAL_MODEL_PATH}")
     
     # Get list of subjects
     subjects = sorted([
@@ -528,8 +556,6 @@ def main():
     # Ensure we have enough chunks for all GPUs
     while len(subject_chunks) < world_size:
         subject_chunks.append([])
-
-    preload_model()
     
     # Launch processes
     mp.spawn(
