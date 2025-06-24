@@ -128,6 +128,36 @@ class VAEWorker:
         # Use repeat instead of expand for better memory efficiency
         mask_tensors = mask_tensors.repeat(1, 3, 1, 1)
         masked_images = image_tensors * mask_tensors
+
+        # # Save test images for visualization
+        # if len(valid_pairs) > 0:
+        #     # Save first image of batch for visualization
+        #     test_img = image_tensors[0]
+        #     test_mask = mask_tensors[0, 0:1]  # Take first channel since mask is repeated
+        #     test_masked = masked_images[0]
+            
+        #     # Convert tensors to PIL images
+        #     to_pil = transforms.ToPILImage()
+            
+        #     # Create test output directory
+        #     test_dir = "test_masked_outputs"
+        #     os.makedirs(test_dir, exist_ok=True)
+            
+        #     # Generate unique filename based on timestamp
+        #     timestamp = int(time.time() * 1000)
+        #     base_name = f"test_{timestamp}"
+            
+        #     # Save original image
+        #     test_img_pil = to_pil(test_img)
+        #     test_img_pil.save(os.path.join(test_dir, f"{base_name}_original.png"))
+            
+        #     # Save mask 
+        #     test_mask_pil = to_pil(test_mask)
+        #     test_mask_pil.save(os.path.join(test_dir, f"{base_name}_mask.png"))
+            
+        #     # Save masked result
+        #     test_masked_pil = to_pil(test_masked)
+        #     test_masked_pil.save(os.path.join(test_dir, f"{base_name}_masked.png"))
         
         # Convert back to list for compatibility
         return [masked_images[i] for i in range(masked_images.shape[0])]
@@ -268,6 +298,7 @@ class VAEWorker:
                 if img_path in image_paths
             ]
         
+        
         # Prefetch next batch while processing current batch
         def prefetch_batch(batch_image_paths, batch_mask_paths):
             """Prefetch the next batch of images and masks"""
@@ -279,7 +310,7 @@ class VAEWorker:
             current_batch_future = self.prefetch_exec.submit(
                 self._load_and_preprocess_batch, init_image_paths, init_mask_paths
             )
-        
+
         # Process in batches with prefetching
         for i in range(0, len(image_paths), self.args.batch_size):
             # retrieve current batch
@@ -367,7 +398,8 @@ class VAEWorker:
                 
             # ex. output target structure as such: ...mv_latents/100001/ 
             target_subject_path = os.path.join(self.args.target_dir, subject)
-            if os.path.exists(target_subject_path) and not self.args.overwrite:
+            target_subject_npz_path = os.path.join(target_subject_path, f"{subject}.npz")
+            if os.path.exists(target_subject_npz_path) and not self.args.overwrite:
                 print(f"Worker {self.rank}: Skipping {subject} - already exists")
                 continue
                 
@@ -411,7 +443,6 @@ class VAEWorker:
                 print(f"Worker {self.rank}: Processing camera {image_camera_dir} in {subject}")
                 camera_latents_dict = self.process_camera_dir(image_camera_path, mask_camera_path)
                 subject_latents_dict.update(camera_latents_dict)
-                break # NOTE: delete this after debugging
                 
             # save all latents to singular {subject}.npz file
             try:
@@ -446,7 +477,7 @@ def main():
                        help='Overwrite existing latents')
     parser.add_argument('--batch_size', type=int, default=16,
                        help='Batch size for encoding latents')
-    parser.add_argument('--io_workers', type=int, default=2,
+    parser.add_argument('--io_workers', type=int, default=8,
                        help='Number of I/O workers for loading images/masks')
     parser.add_argument('--save_workers', type=int, default=1,
                        help='Number of workers for saving latents (total threads = io_workers + save_workers)')
