@@ -443,7 +443,6 @@ class VAEWorker:
                 print(f"Worker {self.rank}: Processing camera {image_camera_dir} in {subject}")
                 camera_latents_dict = self.process_camera_dir(image_camera_path, mask_camera_path)
                 subject_latents_dict.update(camera_latents_dict)
-                break
                 
             # save all latents to singular {subject}.npz file
             try:
