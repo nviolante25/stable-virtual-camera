@@ -11,6 +11,7 @@ from concurrent.futures import ThreadPoolExecutor, as_completed
 import time
 from typing import List, Tuple
 import torch.nn.functional as F
+import tqdm
 
 # Set up multiprocessing with spawn method
 mp.set_start_method('spawn', force=True)
@@ -58,6 +59,9 @@ class VAEWorker:
             subfolder="vae"
         ).to(self.device)
         self.model.eval()
+
+        # Initialize I/O executor for prefetching 
+        self.prefetch_exec = ThreadPoolExecutor(max_workers=1)
         
         # Warm up the model
         self._warmup_model()
@@ -68,6 +72,13 @@ class VAEWorker:
         with torch.no_grad():
             _ = self.model.encode(dummy_input).latent_dist.sample()
         torch.cuda.synchronize()
+
+    def shutdown_worker_executors(self):
+        """Shutdown ThreadPoolExecutors when finished."""
+        print(f"Worker {self.rank}: Shutting down I/O executor...")
+        self.io_executor.shutdown(wait=True)
+        print(f"Worker {self.rank}: I/O executor shut down.")
+
     
     def process_batch(self, batch_images):
         """Process a batch of images and return latents"""
@@ -91,7 +102,13 @@ class VAEWorker:
             masks = [future.result() for future in mask_futures]
         
         # Filter out None results
-        valid_pairs = [(img, mask) for img, mask in zip(images, masks) if img is not None and mask is not None]
+        valid_pairs = []
+        for img, mask in zip(images, masks):
+            if img is not None and mask is not None: 
+                valid_pairs.append((img, mask))
+            else:
+                print("WARNING! Unexpected skippage of a timestep within the dataset!!!")
+                print("NOTE: This is serious, as it will desync latent assignments!!!")
         
         if not valid_pairs:
             return []
@@ -207,8 +224,20 @@ class VAEWorker:
         except Exception as e:
             print(f"Worker {self.rank}: Error saving test image: {e}")
     
-    def process_camera_dir(self, camera_path, target_camera_dir, mask_camera_path):
+    def process_camera_dir(self, 
+        camera_path,
+        # target_camera_dir,
+        mask_camera_path,
+    ):
         """Process all images in a camera directory with optimized batch processing and prefetching"""
+        # print("inside process_camera_dir")
+        # print("camera_path:", camera_path)
+        target_camera_dir = camera_path.replace("mv_captures", "mv_latents").split("/images_lr")[0]
+        # print("target_camera_dir:", target_camera_dir)
+        # print("mask_camera_path:", mask_camera_path)
+        # GOAL: fill up this dict with all images inside camera
+        camera_latents_dict = {}
+
         # Get and sort images with thread-safe glob
         image_paths = sorted(
             [os.path.join(camera_path, name) for name in os.listdir(camera_path) 
@@ -241,38 +270,64 @@ class VAEWorker:
         def prefetch_batch(batch_image_paths, batch_mask_paths):
             """Prefetch the next batch of images and masks"""
             return self._load_and_preprocess_batch(batch_image_paths, batch_mask_paths)
+
+        if len(image_paths) > 0:
+            init_image_paths = image_paths[0:self.args.batch_size]
+            init_mask_paths  =  mask_paths[0:self.args.batch_size]
+            current_batch_future = self.prefetch_exec.submit(
+                self._load_and_preprocess_batch, init_image_paths, init_mask_paths
+            )
         
         # Process in batches with prefetching
         for i in range(0, len(image_paths), self.args.batch_size):
-            batch_image_paths = image_paths[i:i + self.args.batch_size]
-            batch_mask_paths = mask_paths[i:i + self.args.batch_size]
-            
-            # Start prefetching next batch if available
-            next_batch_future = None
+            # retrieve current batch
+            if current_batch_future:
+                batch_images = current_batch_future.result() # these are MASKED
+            else:
+                batch_images = []
+
+            if not batch_images:
+                print(f"Worker {self.rank}: No valid images in batch starting at index {i}. Skipping.")
+                current_batch_future = None # reset
+                continue
+
+            # prefetch next batch
             if i + self.args.batch_size < len(image_paths):
                 next_batch_image_paths = image_paths[i + self.args.batch_size:i + 2 * self.args.batch_size]
                 next_batch_mask_paths = mask_paths[i + self.args.batch_size:i + 2 * self.args.batch_size]
-                with ThreadPoolExecutor(max_workers=1) as executor:
-                    next_batch_future = executor.submit(prefetch_batch, next_batch_image_paths, next_batch_mask_paths)
-            
-            # Load current batch
-            batch_images = self._load_and_preprocess_batch(batch_image_paths, batch_mask_paths)
-            
-            if not batch_images:
-                continue
-            
+                next_batch_future = self.prefetch_exec.submit(
+                    self._load_and_preprocess_batch, next_batch_image_paths, next_batch_mask_paths
+                )
+            else:
+                current_batch_future = None
+
             try:
                 # Process batch
                 start_time = time.time()
                 latents = self.process_batch(batch_images)
                 
-                # Save latents in parallel
-                with ThreadPoolExecutor(max_workers=self.args.save_workers) as executor:
-                    executor.map(self._save_latent, batch_image_paths, latents)
-                
+                # OLD -- Save latents in parallel
+                # with ThreadPoolExecutor(max_workers=self.args.save_workers) as executor:
+                #     executor.map(self._save_latent, batch_image_paths, latents)
+
+                # NEW -- Store latents in dict, then save after all subjects processed
+                try: 
+                    for j, latent in enumerate(latents):
+                        image_path = image_paths[i + j] # inter-batch idx 'i' + infra-batch idx 'j'
+                        cam_id = os.path.basename(os.path.dirname(image_path))
+                        timestep = os.path.basename(image_path).split('_')[0]
+                        # print("cam_id:", cam_id)
+                        # print("timestep:", timestep)
+                        # print("latent shape:", latents[j].shape)
+                        key = f"{cam_id}.{timestep}"
+                        camera_latents_dict[key] = latents[j].numpy()
+                except Exception as e:
+                    j = j - 1 # adjust behavior to accurately keep track of batch size
+                    print(f"Worker {self.rank}: Last batch processed. On rare occasions, this may be an error.")
+
                 # Log performance
                 batch_time = time.time() - start_time
-                print(f"Worker {self.rank}: Processed {len(batch_images)} images in {batch_time:.2f}s "
+                print(f"Worker {self.rank}: Processed {min(j + 1, len(batch_images))} images in {batch_time:.2f}s "
                       f"({len(batch_images)/batch_time:.2f} img/s)")
                 
                 # Clean up
@@ -282,9 +337,11 @@ class VAEWorker:
             except Exception as e:
                 print(f"Worker {self.rank}: Error processing batch: {e}")
                 continue
+
+        return camera_latents_dict
     
     def _save_latent(self, image_path, latent):
-        """Save a single latent tensor"""
+        """DEPRECATED -- Save a single latent tensor"""
         # mask images as well
         try:
             frame_num = os.path.basename(image_path).split('_')[0]
@@ -299,13 +356,15 @@ class VAEWorker:
     
     def process_subjects(self, subjects):
         """Process a list of subjects"""
+        subject_latents_dict = {}
+
         for subject in subjects:
             subject_path = os.path.join(self.args.dataset_dir, subject)
             if not os.path.isdir(subject_path):
                 continue
                 
+            # ex. output target structure as such: ...mv_latents/100001/ 
             target_subject_path = os.path.join(self.args.target_dir, subject)
-            print(target_subject_path)
             if os.path.exists(target_subject_path) and not self.args.overwrite:
                 print(f"Worker {self.rank}: Skipping {subject} - already exists")
                 continue
@@ -314,16 +373,21 @@ class VAEWorker:
             
             # Create directories
             os.makedirs(target_subject_path, exist_ok=True)
-            target_images_dir = os.path.join(target_subject_path, "images_lr")
-            os.makedirs(target_images_dir, exist_ok=True)
+            # target_images_dir = os.path.join(target_subject_path, "images_lr")
+            # os.makedirs(target_images_dir, exist_ok=True)
             
-            # Get camera directories
+            # Get camera directories (images & masks)
             images_lr_path = os.path.join(subject_path, "images_lr")
             mask_lr_path = os.path.join(subject_path, "fmask_lr")
             if not os.path.exists(images_lr_path):
                 print(f"Worker {self.rank}: No images_lr directory found in {subject_path}")
                 continue
                 
+            if not os.path.exists(mask_lr_path):
+                print(f"Worker {self.rank}: No fmask_lr directory found in {subject_path}")
+                continue
+                
+            # Sort cameras
             image_camera_dirs = sorted([
                 d for d in os.listdir(images_lr_path) 
                 if os.path.isdir(os.path.join(images_lr_path, d)) and d.startswith('CC')
@@ -338,18 +402,35 @@ class VAEWorker:
             for image_camera_dir, mask_camera_dir in zip(image_camera_dirs, mask_camera_dirs):
                 image_camera_path = os.path.join(images_lr_path, image_camera_dir)
                 mask_camera_path = os.path.join(mask_lr_path, mask_camera_dir)
-                target_image_camera_dir = os.path.join(target_images_dir, image_camera_dir)
-                os.makedirs(target_image_camera_dir, exist_ok=True)
+                # target_image_camera_dir = os.path.join(target_subject_path, image_camera_dir)
+                # print("target_image_camera_dir:", target_image_camera_dir)
+                # os.makedirs(target_image_camera_dir, exist_ok=True)
                 
                 print(f"Worker {self.rank}: Processing camera {image_camera_dir} in {subject}")
-                self.process_camera_dir(image_camera_path, target_image_camera_dir, mask_camera_path)
+                camera_latents_dict = self.process_camera_dir(image_camera_path, mask_camera_path)
+                subject_latents_dict.update(camera_latents_dict)
+                break # NOTE: delete this after debugging
                 
-            print(f"Worker {self.rank}: Finished subject {subject}")
+            # save all latents to singular {subject}.npz file
+            try:
+                if subject_latents_dict:
+                    np.savez_compressed(os.path.join(target_subject_path, f"{subject}.npz"), **subject_latents_dict)
+                    print(f"Worker {self.rank}: Finished subject {subject}.")
+                else:
+                    print(f"Worker {self.rank}: No latents processed for subject {subject}")
+            except Exception as e:
+                print(f"Worker {self.rank}: Error saving subject NPZ for {subject}: {e}")
+
+        print("Finished processing all subjects.")
+
 
 def worker(rank, world_size, args, subject_chunks):
     """Worker process wrapper"""
     worker = VAEWorker(rank, world_size, args)
-    worker.process_subjects(subject_chunks[rank])
+    try: 
+        worker.process_subjects(subject_chunks[rank])
+    finally:
+        worker.shutdown_worker_executors()
 
 def main():
     parser = argparse.ArgumentParser(description='Precompute latents from images')
@@ -363,9 +444,9 @@ def main():
                        help='Overwrite existing latents')
     parser.add_argument('--batch_size', type=int, default=16,
                        help='Batch size for encoding latents')
-    parser.add_argument('--io_workers', type=int, default=12,
+    parser.add_argument('--io_workers', type=int, default=2,
                        help='Number of I/O workers for loading images/masks')
-    parser.add_argument('--save_workers', type=int, default=4,
+    parser.add_argument('--save_workers', type=int, default=1,
                        help='Number of workers for saving latents (total threads = io_workers + save_workers)')
     
     args = parser.parse_args()
@@ -375,7 +456,7 @@ def main():
         d for d in os.listdir(args.dataset_dir) 
         if os.path.isdir(os.path.join(args.dataset_dir, d))
     ])
-    
+
     if args.max_subjects is not None:
         subjects = subjects[:args.max_subjects]
     
