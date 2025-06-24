@@ -422,9 +422,8 @@ class VAEWorker:
     
     def process_subjects(self, subjects):
         """Process a list of subjects"""
-        subject_latents_dict = {}
-
         for subject in subjects:
+            subject_latents_dict = {}
             subject_path = os.path.join(self.args.dataset_dir, subject)
             if not os.path.isdir(subject_path):
                 continue
@@ -481,6 +480,7 @@ class VAEWorker:
             try:
                 if subject_latents_dict:
                     np.savez_compressed(os.path.join(target_subject_path, f"{subject}.npz"), **subject_latents_dict)
+                    del subject_latents_dict
                     print(f"Worker {self.rank}: Finished subject {subject}.")
                 else:
                     print(f"Worker {self.rank}: No latents processed for subject {subject}")
