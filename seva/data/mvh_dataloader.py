@@ -482,8 +482,8 @@ class MVHumanNetDataset(Dataset):
     
     def __getitem__(self, idx):
         scene = self.scenes[idx]
-        subject_id = scene['subject_id']
-        timestep = scene['timestep']
+        subject_id = scene['subject_id'] # ex. 100001
+        timestep = scene['timestep'] # ex. 0005
         frames_info = scene['frames_info'] # list of dicts (dict per camera keyframe)
         subject_path = os.path.join(self.root_dir, subject_id) 
 
@@ -520,16 +520,16 @@ class MVHumanNetDataset(Dataset):
 
         # load latents
         if self.latents_dir is not None:
+            # latents_dir would be 
             latents_dir = subject_path.replace(self.root_dir, self.latents_dir)
-            latents_dir = os.path.join(latents_dir, "images_lr")
-            sample_cameras = [os.path.join(latents_dir, frames_info[i]['camera']) for i in images_idxs]
-            # print("sample_cameras: ", sample_cameras)
-            # print("latents_dir [after]: ", latents_dir)
-
-            latents_files = sorted([os.path.join(sample_cam_dir, f"{timestep}_latent.npz") for sample_cam_dir in sample_cameras]) # changed to accept npz files only
-            # print("latent_files number: ", len(latents_files))
-            clean_latents = torch.stack([torch.from_numpy(np.load(latents_files[i])['latent']) for i in range(len(latents_files))])
-            # print(f"Loaded clean_latents shape: {clean_latents.shape}")
+            # latents_dir = os.path.join(latents_dir, "images_lr")
+            npz_file = os.path.join(latents_dir, f"{subject_id}.npz")
+            npz_data = np.load(npz_file)
+            
+            sample_cameras = sorted([frames_info[i]['camera'] for i in images_idxs])
+            latent_tensors = [npz_data[f"{sample_cam}.{timestep}"] for sample_cam in sample_cameras]
+            clean_latents = torch.stack([torch.from_numpy(latent_tensor) for latent_tensor in latent_tensors])
+            # (batch_size, 4, 72, 72)
         else:
             # currently, we REQUIRE precomputed latents, so we throw error
             # (possibly add on-the-fly computation later)
