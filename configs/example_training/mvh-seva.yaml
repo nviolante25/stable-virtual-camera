@@ -86,8 +86,16 @@ model:
             params:
               unsqueeze_dim: True
 
+    # first_stage_config:
+    #   target: sgm.models.autoencoder.IdentityFirstStage
+
+    # first_stage_config:
+    #   target: sgm.models.autoencoder.IdentityFirstStage
     first_stage_config:
-      target: sgm.models.autoencoder.IdentityFirstStage
+      target: sgm.models.autoencoder.DecoderOnlyAutoencoderKL
+      params:
+        module:
+          target: seva.modules.autoencoder.AutoEncoder
 
     loss_fn_config:
       target: sgm.modules.diffusionmodules.loss.StandardDiffusionLoss

@@ -379,6 +379,7 @@ class ImageLogger(Callback):
         save_dir,
         split,
         images,
+        gt_images,
         masks,
         global_step,
         current_epoch,
@@ -497,6 +498,7 @@ class ImageLogger(Callback):
                 )
             
             masks = batch["mask"] # (B, max_images) binary boolean tensor
+            gt_images = batch["frames"] # (B, max_images, C, H, W)
 
             print("AFTER LOGGING")
 
@@ -527,6 +529,7 @@ class ImageLogger(Callback):
                 pl_module.logger.save_dir,
                 split,
                 images,
+                gt_images,
                 masks,
                 pl_module.global_step,
                 pl_module.current_epoch,

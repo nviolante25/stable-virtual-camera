@@ -19,8 +19,8 @@ class AutoEncoder(nn.Module):
             force_download=False,
             low_cpu_mem_usage=False,
         )
-        # self.module.eval().requires_grad_(False)  # type: ignore
-        self.module.train()
+        self.module.eval().requires_grad_(False)  # type: ignore
+        # self.module.train()
         self.chunk_size = chunk_size
 
     def _encode(self, x: torch.Tensor) -> torch.Tensor:
