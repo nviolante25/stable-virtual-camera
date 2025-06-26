@@ -475,16 +475,25 @@ class VAEWorker:
             ])
             
             # Process each camera directory
-            for image_camera_dir, mask_camera_dir in zip(image_camera_dirs, mask_camera_dirs):
-                image_camera_path = os.path.join(images_lr_path, image_camera_dir)
-                mask_camera_path = os.path.join(mask_lr_path, mask_camera_dir)
-                # target_image_camera_dir = os.path.join(target_subject_path, image_camera_dir)
-                # print("target_image_camera_dir:", target_image_camera_dir)
-                # os.makedirs(target_image_camera_dir, exist_ok=True)
-                
-                print(f"Worker {self.rank}: Processing camera {image_camera_dir} in {subject}")
-                camera_latents_dict = self.process_camera_dir(image_camera_path, mask_camera_path)
-                subject_latents_dict.update(camera_latents_dict)
+            # NOTE: it seems at least one file in a subject is missing and can destroy the entire process
+            # çurrently, just skips over the subject if this occurs, and writes its name into a file.
+            try:
+                for image_camera_dir, mask_camera_dir in zip(image_camera_dirs, mask_camera_dirs):
+                    image_camera_path = os.path.join(images_lr_path, image_camera_dir)
+                    mask_camera_path = os.path.join(mask_lr_path, mask_camera_dir)
+                    # target_image_camera_dir = os.path.join(target_subject_path, image_camera_dir)
+                    # print("target_image_camera_dir:", target_image_camera_dir)
+                    # os.makedirs(target_image_camera_dir, exist_ok=True)
+                    
+                    print(f"Worker {self.rank}: Processing camera {image_camera_dir} in {subject}")
+                    camera_latents_dict = self.process_camera_dir(image_camera_path, mask_camera_path)
+                    subject_latents_dict.update(camera_latents_dict)
+            except Exception as e:
+                print(f"Worker {self.rank}: Error processing subject {subject}: {e}")
+                # write subject name to file for later processing
+                with open(os.path.join(target_subject_path, "missing_files.txt"), "a") as f:
+                    f.write(f"{subject}\n")
+                continue
                 
             # save all latents to singular {subject}.npz file
             try:
