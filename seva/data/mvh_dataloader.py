@@ -364,6 +364,7 @@ class MVHumanNetDataset(Dataset):
         data_limit=None,
         only_include=None,
         crop=True,
+        apply_scale_factor=True,
     ):
         self.root_dir = root_dir             # directory of all subject directories
         self.latents_dir = latents_dir       # directory of all latents
@@ -374,6 +375,7 @@ class MVHumanNetDataset(Dataset):
         self.data_limit = data_limit         # TEMP -- only get the first 'data_limit' (int) subjects
         self.crop = crop
         self.adjacent_frame_sampling_prob = 0.2 # Trajectory NVS acceptance rate
+        self.apply_scale_factor = apply_scale_factor
         if num_images >= 16: # LIMIT to 16 images
             self.num_images = 16
 
@@ -458,20 +460,22 @@ class MVHumanNetDataset(Dataset):
             timesteps = len([f for f in os.listdir(first_dir_path)])
 
             for i in range(1, timesteps + 1):
+                # for each timestep, record all camera views (48)
                 timestep = f"{i * 5:04d}"
-                frames = []
+                frames = {}
                 for camera in camera_dirs:
                     frame = {
-                        'camera': camera,
-                        'image_path': os.path.join(images_path, camera, f"{timestep}_img.jpg"),
-                        'mask_path': os.path.join(masks_path, camera, f"{timestep}_img_fmask.png"),
-                        'annots_path': os.path.join(annots_path, camera, f"{timestep}_img.json")
+                        camera : {
+                            'image_path': os.path.join(images_path, camera, f"{timestep}_img.jpg"),
+                            'mask_path': os.path.join(masks_path, camera, f"{timestep}_img_fmask.png"),
+                            'annots_path': os.path.join(annots_path, camera, f"{timestep}_img.json")
+                        }
                     }
-                    frames.append(frame)
+                    frames.update(frame)
 
                 scenes.append({
                     'subject_id': subject, # string ID
-                    'frames_info': frames,  # list of dicts
+                    'frames_info': frames,  # dict of {camera: image data}
                     'timestep': timestep
                 })
                 
@@ -484,7 +488,7 @@ class MVHumanNetDataset(Dataset):
         scene = self.scenes[idx]
         subject_id = scene['subject_id'] # ex. 100001
         timestep = scene['timestep'] # ex. 0005
-        frames_info = scene['frames_info'] # list of dicts (dict per camera keyframe)
+        frames_info = scene['frames_info'] # camera dict
         subject_path = os.path.join(self.root_dir, subject_id) 
 
         # get camera parameters
@@ -492,43 +496,54 @@ class MVHumanNetDataset(Dataset):
         intrinsics = np.array(self.cam_params[subject_id]['intrinsics'])
         camera_scale = self.cam_params[subject_id]['camera_scale']        
 
-        if self.pre_scale != 1: # update intrinsics
+        if self.pre_scale != 1: # update intrinsics (for MVHumanNet)
             intrinsics = update_intrinsics_resize(intrinsics, scale=self.pre_scale)
 
         # Sample frames indices
+        camera_order = []
+        sampled_image_paths = []
+        sampled_image_mask_paths = []
+
         # NOTE: if num_images>16, then trajectory NVS will default to using all in rung
         if np.random.rand() <= self.adjacent_frame_sampling_prob: # for trajectory NVS
             # choose which rung of cameras to sample from (top/mid/bot)
             # this is only because these paths are the most apparently continuous
             which_rung = np.random.randint(0, len(CAMERA_RUNGS))
             rung_of_cameras = CAMERA_RUNGS[which_rung]
-            images_files = [frame['image_path'] for frame in frames_info if frame['camera'] in rung_of_cameras]
+            for cam in rung_of_cameras: # capture masked images in 16-camera rung
+                if cam in frames_info: # these should ALL EXIST
+                    camera_order.append(cam)
+                    sampled_image_paths.append(frames_info[cam]['image_path'])
+                    sampled_image_mask_paths.append(frames_info[cam]['mask_path'])
 
             # NOTE: currenty only uses the rungs (path on the xy plane)
             # TODO: possibly add support for more paths (zig-zag, up-and-down, snake, etc.)
-            start_idx = np.random.randint(0, len(TOP_RUNG)) # this is 16
-            images_idxs = np.roll(np.arange(len(TOP_RUNG)), -start_idx)[:self.num_images]
+            start_idx = np.random.randint(0, len(sampled_image_paths)) # this should be 16
+            images_permutation = np.roll(np.arange(len(sampled_image_paths)), -start_idx)[:self.num_images]
         else: # for set NVS
-            images_files = [frame['image_path'] for frame in frames_info] # all keyframes
-            images_idxs = np.random.choice(len(images_files), self.num_images, replace=False)
+            # get all camera views
+            camera_order = [cam for cam in frames_info]
+            sampled_image_paths = [frames_info[cam]['image_path'] for cam in frames_info]
+            sampled_image_mask_paths = [frames_info[cam]['mask_path'] for cam in frames_info]
+            # then randomly sample
+            images_permutation = np.random.choice(len(sampled_image_paths), self.num_images, replace=False)
 
-        images_files = [images_files[i] for i in images_idxs]
+        # re-order based on the permutation
+        sampled_image_paths = [sampled_image_paths[i] for i in images_permutation]
+        sampled_image_mask_paths = [sampled_image_mask_paths[i] for i in images_permutation]
+        camera_order = [camera_order[i] for i in images_permutation]
 
-        # print("images_files: ", len(images_files))
-        # print("images_dir: ", self.root_dir)
-        # print("latents_dir [before]: ", self.latents_dir)
 
         # load latents
         if self.latents_dir is not None:
-            # latents_dir would be 
             latents_dir = subject_path.replace(self.root_dir, self.latents_dir)
-            # latents_dir = os.path.join(latents_dir, "images_lr")
             npz_file = os.path.join(latents_dir, f"{subject_id}.npz")
-            npz_data = np.load(npz_file)
+            npz_data = np.load(npz_file) # this is already for the current subject
             
-            sample_cameras = sorted([frames_info[i]['camera'] for i in images_idxs])
-            latent_tensors = [npz_data[f"{sample_cam}.{timestep}"] for sample_cam in sample_cameras]
-            clean_latents = torch.stack([torch.from_numpy(latent_tensor * self.scale_factor) for latent_tensor in latent_tensors])
+            latent_tensors = [npz_data[f"{sample_cam}.{timestep}"] for sample_cam in camera_order]
+            clean_latents = torch.stack([torch.from_numpy(latent_tensor) for latent_tensor in latent_tensors])
+            if self.apply_scale_factor:
+                clean_latents = clean_latents * self.scale_factor
             # ! on precomputed latents, forgot to scale by scale_factor, so we do it here
             # (batch_size, 4, 72, 72)
         else:
@@ -540,26 +555,22 @@ class MVHumanNetDataset(Dataset):
         # Load frames from image paths
         # (T,3,H,W)
         frames = torch.zeros((self.num_images, 3, self.target_shape[0],  self.target_shape[1]))
-        for i, img_file in enumerate(images_files):
-            image = Image.open(img_file).convert("RGB")
-            img_mask = Image.open(frames_info[i]['mask_path'])
+        for i, (img_path, mask_path) in enumerate(zip(sampled_image_paths, sampled_image_mask_paths)):
+            image = Image.open(img_path).convert("RGB")
+            img_mask = Image.open(mask_path)
             # Create masked image by compositing with black background
             background = Image.new('RGB', image.size, (0, 0, 0))
             masked_image = Image.composite(image, background, img_mask)
             # Apply transforms after masking
             # NOTE: if using non-cropped latents, then transforms is just the default as in @dataset.py
-            masked_image = self.transform(masked_image) # images converted to square, [-1, 1] normalization
+            masked_image = self.transform(masked_image)
             frames[i] = masked_image
 
-        # print("frames.shape: ", frames.shape)
-        
-        # Sample input and target frames (from the images we have now)
-        num_input_frames = np.random.randint(1, self.num_images)  # Randomly select number of input frames
-        input_frames_indices = np.random.choice(self.num_images, num_input_frames, replace=False) # Randomly select the input frames
+        # Sample input/target frame split
+        num_input_frames = np.random.randint(1, self.num_images) # at least 1 input frame
+        input_frames_indices = np.random.choice(self.num_images, num_input_frames, replace=False) 
 
-        # print("input_frames_indices: ", input_frames_indices)
-
-        # Create masks (for above 1: inputs/ 0: targets)
+        # Create input/target masks (1: input/ 0: target)
         input_frames_mask = torch.zeros(self.num_images, dtype=torch.bool)
         input_frames_mask[input_frames_indices] = True
 
@@ -574,7 +585,7 @@ class MVHumanNetDataset(Dataset):
             ) for cam in extrinsics.keys()
         ])
         all_c2ws = torch.from_numpy(all_c2ws).float()
-        c2ws = all_c2ws[images_idxs]    # choose previously sampled ones only (NOTE: order is unknown right now, need to edit!)
+        c2ws = all_c2ws[images_permutation]    # choose previously sampled ones only (NOTE: order is unknown right now, need to edit!)
         center_cameras(all_c2ws, c2ws)  # mean center
         scale_cameras(c2ws)
 
