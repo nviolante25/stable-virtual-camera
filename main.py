@@ -336,12 +336,39 @@ class ImageLogger(Callback):
         self.log_first_step = log_first_step
         self.log_before_first_step = log_before_first_step
 
+    def add_colored_border(self, image_tensor, border_color, border_width=2):
+        """
+        Add a colored border around an image tensor.
+        
+        Args:
+            image_tensor: Tensor of shape [C, H, W] in range [-1, 1] or [0, 1]
+            border_color: Tuple of (R, G, B) values in range [0, 1]
+            border_width: Width of the border in pixels
+        
+        Returns:
+            Tensor with colored border
+        """
+        print("ImageLogger::add_colored_border:image_tensor.shape: ", image_tensor.shape)
+        _, H, W = image_tensor.shape
+        
+        # Create border tensor
+        border_tensor = torch.tensor(border_color, dtype=image_tensor.dtype, device=image_tensor.device)
+        border_tensor = border_tensor.view(3, 1, 1).expand(3, H + 2*border_width, W + 2*border_width)
+        
+        # Create new image with border
+        bordered_image = border_tensor.clone()
+        bordered_image[:, border_width:border_width+H, border_width:border_width+W] = image_tensor
+
+        del border_tensor
+        return bordered_image
+
     @rank_zero_only
     def log_local(
         self,
         save_dir,
         split,
         images,
+        masks,
         global_step,
         current_epoch,
         batch_idx,
@@ -370,8 +397,30 @@ class ImageLogger(Callback):
                 # TODO: support wandb
             else:
                 print("ImageLogger::log_local:in local log_local:not heatmap:")
+                print("images[k].shape: ", images[k].shape)
+                print("masks.shape: ", masks.shape)
+            
                 # SEVA multi-view tensors are already flattened in log_img to [N, C, H, W]
-                grid = torchvision.utils.make_grid(images[k], nrow=4)
+                # Add colored borders based on image type
+                bordered_images = []
+                for i, img in enumerate(images[k]):
+                    # Determine border color based on image key or index
+                    print("masks[i]: ", masks[i])
+                    if masks[i]: # inputs
+                        border_color = (247.0, 121.0, 132.0)  # red
+                    else: # targets
+                        border_color = (101.0, 174.0, 219.0)  # blue
+                    
+                    bordered_img = self.add_colored_border(img, border_color, border_width=4)
+                    print("[POST]bordered_img.shape: ", bordered_img.shape) 
+                    bordered_images.append(bordered_img)
+                
+                # Stack bordered images and create grid
+                bordered_tensor = torch.stack(bordered_images)
+                print("bordered_tensor.shape: ", bordered_tensor.shape)
+                grid = torchvision.utils.make_grid(bordered_tensor, nrow=4, padding=4)
+                print("grid.shape: ", grid.shape)
+                
                 if self.rescale:
                     grid = (grid + 1.0) / 2.0  # -1,1 -> 0,1; c,h,w
                 grid = grid.transpose(0, 1).transpose(1, 2).squeeze(-1)
@@ -427,10 +476,12 @@ class ImageLogger(Callback):
                 images = pl_module.log_images(
                     batch, split=split, **self.log_images_kwargs
                 )
+            
+            masks = batch["mask"] # (B, max_images) binary boolean tensor
 
             print("AFTER LOGGING")
 
-            for k in images:
+            for k in images: # images is dict{inputs, reconstructions, samples} (as in diffusion.py)
                 if isinstance(images[k], torch.Tensor):
                     # Handle SEVA multi-view tensors: [batch_size, num_images, C, H, W]
                     if images[k].dim() == 5:
@@ -448,11 +499,16 @@ class ImageLogger(Callback):
                     images[k] = images[k].detach().float().cpu()
                     if self.clamp and not isheatmap(images[k]):
                         images[k] = torch.clamp(images[k], -1.0, 1.0)
+
+            # flatten masks to correspond with images[:N], detach
+            masks = masks.reshape(-1)[:N].detach().cpu()
+            print("masks: ", masks)
             print("ImageLogger::calling log_local")
             self.log_local(
                 pl_module.logger.save_dir,
                 split,
                 images,
+                masks,
                 pl_module.global_step,
                 pl_module.current_epoch,
                 batch_idx,

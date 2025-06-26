@@ -121,9 +121,9 @@ data:
     root_dir: /workspace/datasetvol/mvhuman_data/mv_captures
     latents_dir: /workspace/datasetvol/mvhuman_data/mv_latents
     batch_size: 3
-    num_workers: 4
-    num_images: 8
-    only_include: ["100001", "100002"]
+    num_workers: 1
+    num_images: 4
+    only_include: ["100008", "100099"]
 
 lightning:
   modelcheckpoint:
@@ -146,7 +146,7 @@ lightning:
         log_first_step: False
         log_images_kwargs:
           use_ema_scope: False
-          N: 2 # max samples to generate
+          N: 2 # how many batches to process for image logging
           n_rows: 2
 
   trainer:
