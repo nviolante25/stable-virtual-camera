@@ -341,15 +341,18 @@ class ImageLogger(Callback):
         Add a colored border around an image tensor.
         
         Args:
-            image_tensor: Tensor of shape [C, H, W] in range [-1, 1] or [0, 1]
-            border_color: Tuple of (R, G, B) values in range [0, 1]
+            image_tensor: Tensor of shape [C, H, W] in range [0, 1] (VAE decoded)
+            border_color: Tuple of (R, G, B) values in range [0, 255]
             border_width: Width of the border in pixels
         
         Returns:
             Tensor with colored border
         """
         print("ImageLogger::add_colored_border:image_tensor.shape: ", image_tensor.shape)
-        _, H, W = image_tensor.shape
+        C, H, W = image_tensor.shape
+        
+        # Normalize border color from [0, 255] to [0, 1] range
+        border_color = tuple(c / 255.0 for c in border_color)
         
         # Create border tensor
         border_tensor = torch.tensor(border_color, dtype=image_tensor.dtype, device=image_tensor.device)
@@ -361,6 +364,14 @@ class ImageLogger(Callback):
 
         del border_tensor
         return bordered_image
+
+    def tensor_to_image(self, tensor):
+        # Denormalize and convert to PIL image
+        tensor = tensor.cpu().squeeze(0)
+        tensor = tensor * 0.5 + 0.5  # Denormalize
+        tensor = torch.clamp(tensor, 0, 1)
+        # img = transforms.ToPILImage()(tensor)
+        return tensor
 
     @rank_zero_only
     def log_local(
@@ -378,6 +389,11 @@ class ImageLogger(Callback):
         print("ImageLogger::log_local:rootdir to save images: ", root)
         print("number of images: ", len(images))
         for k in images:
+            # ! DELETE THIS LATER (need inputs to be RGB for this to work)
+            # currently, these are still latents! (TODO: need to get GT files from dataloader)
+            if k == "inputs":
+                continue
+
             if isheatmap(images[k]):
                 print("ImageLogger::log_local:in local log_local:heatmap:")
                 fig, ax = plt.subplots()
@@ -410,7 +426,9 @@ class ImageLogger(Callback):
                         border_color = (247.0, 121.0, 132.0)  # red
                     else: # targets
                         border_color = (101.0, 174.0, 219.0)  # blue
-                    
+
+                    # img = self.tensor_to_image(img) # borrowed from autoenc.py (TODO: check if samples & reconstruction have same value range)
+
                     bordered_img = self.add_colored_border(img, border_color, border_width=4)
                     print("[POST]bordered_img.shape: ", bordered_img.shape) 
                     bordered_images.append(bordered_img)
@@ -423,6 +441,7 @@ class ImageLogger(Callback):
                 
                 if self.rescale:
                     grid = (grid + 1.0) / 2.0  # -1,1 -> 0,1; c,h,w
+                
                 grid = grid.transpose(0, 1).transpose(1, 2).squeeze(-1)
                 grid = grid.numpy()
                 grid = (grid * 255).astype(np.uint8)

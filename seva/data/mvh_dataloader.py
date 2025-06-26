@@ -528,7 +528,8 @@ class MVHumanNetDataset(Dataset):
             
             sample_cameras = sorted([frames_info[i]['camera'] for i in images_idxs])
             latent_tensors = [npz_data[f"{sample_cam}.{timestep}"] for sample_cam in sample_cameras]
-            clean_latents = torch.stack([torch.from_numpy(latent_tensor) for latent_tensor in latent_tensors])
+            clean_latents = torch.stack([torch.from_numpy(latent_tensor * self.scale_factor) for latent_tensor in latent_tensors])
+            # ! on precomputed latents, forgot to scale by scale_factor, so we do it here
             # (batch_size, 4, 72, 72)
         else:
             # currently, we REQUIRE precomputed latents, so we throw error
@@ -623,7 +624,7 @@ class MVHumanNetDataset(Dataset):
 
         replace = torch.cat( # clean latents and binary mask
             [
-                clean_latents * self.scale_factor,
+                clean_latents, # * self.scale_factor,
                 repeat(
                     input_frames_mask,
                     "n -> n 1 h w",
