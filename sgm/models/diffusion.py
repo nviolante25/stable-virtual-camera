@@ -311,7 +311,7 @@ class DiffusionEngine(pl.LightningModule):
                 x = batch[embedder.input_key][:n]
                 if isinstance(x, torch.Tensor):
                     if x.dim() == 1:
-                        # class-conditional, convert integer to string
+                        # class-conditional, convert integer to stringa
                         x = [str(x[i].item()) for i in range(x.shape[0])]
                         xc = log_txt_as_img((image_h, image_w), x, size=image_h // 4)
                     elif x.dim() == 2:
@@ -367,10 +367,10 @@ class DiffusionEngine(pl.LightningModule):
         N = min(x.shape[0], N)
         x = x.to(self.device)[:N]
         # log["inputs"] = x
-        z = self.encode_first_stage(x)
+        z = self.encode_first_stage(x) # identity
         reconstructions = self.decode_first_stage(z)
         gt_images = batch["frames"]
-        log["inputs"] = gt_images
+        log["inputs"] = gt_images[:N]
 
         print("X SHAPE: ", x.shape)
         print("RECONSTRUCTIONS SHAPE: ", reconstructions.shape)

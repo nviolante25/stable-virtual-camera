@@ -389,11 +389,6 @@ class ImageLogger(Callback):
         print("ImageLogger::log_local:rootdir to save images: ", root)
         print("number of images: ", len(images))
         for k in images:
-            # ! DELETE THIS LATER (need inputs to be RGB for this to work)
-            # currently, these are still latents! (TODO: need to get GT files from dataloader)
-            if k == "inputs":
-                continue
-
             if isheatmap(images[k]):
                 print("ImageLogger::log_local:in local log_local:heatmap:")
                 fig, ax = plt.subplots()

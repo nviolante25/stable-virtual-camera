@@ -485,7 +485,6 @@ class MVHumanNetDataset(Dataset):
         return len(self.scenes)
     
     def __getitem__(self, idx):
-        print("MVHumanNetDataset::__getitem__ idx: ", idx)
         scene = self.scenes[idx]
         subject_id = scene['subject_id'] # ex. 100001
         timestep = scene['timestep'] # ex. 0005
@@ -534,17 +533,11 @@ class MVHumanNetDataset(Dataset):
         sampled_image_mask_paths = [sampled_image_mask_paths[i] for i in images_permutation]
         camera_order = [camera_order[i] for i in images_permutation]
 
-        print("before")
-
-
         # load latents
         if self.latents_dir is not None:
-            print("load latents")
             latents_dir = subject_path.replace(self.root_dir, self.latents_dir)
             npz_file = os.path.join(latents_dir, f"{subject_id}.npz")
-            print("npz_file: ", npz_file)
             npz_data = np.load(npz_file) # this is already for the current subject
-            print("npz_data loaded")
 
             latent_tensors = [npz_data[f"{sample_cam}.{timestep}"] for sample_cam in camera_order]
             clean_latents = torch.stack([torch.from_numpy(latent_tensor) for latent_tensor in latent_tensors])
@@ -557,8 +550,6 @@ class MVHumanNetDataset(Dataset):
             # (possibly add on-the-fly computation later)
             clean_latents = None
             raise ValueError("Latents directory must be provided for MVHumanNetDataset (as of now)")
-
-        print("after")
 
         # Load frames from image paths
         # (T,3,H,W)
@@ -573,8 +564,6 @@ class MVHumanNetDataset(Dataset):
             # NOTE: if using non-cropped latents, then transforms is just the default as in @dataset.py
             masked_image = self.transform(masked_image)
             frames[i] = masked_image
-
-        print("after frames")
 
         # Sample input/target frame split
         num_input_frames = np.random.randint(1, self.num_images) # at least 1 input frame
@@ -712,7 +701,6 @@ class MVHumanNetDataset(Dataset):
                 "frames": frames,
                 "replace": replace,
             }
-            print("output dict")
         except Exception as e:
             print(f"Error creating output_dict: {e}")
             raise
