@@ -120,7 +120,7 @@ class DiffusionEngine(pl.LightningModule):
 
     @torch.no_grad()
     def decode_first_stage(self, z):
-        z = 1.0 / self.scale_factor * z
+        # z = 1.0 / self.scale_factor * z
         n_samples = default(self.en_and_decode_n_samples_a_time, z.shape[0])
 
         n_rounds = math.ceil(z.shape[0] / n_samples)
@@ -150,7 +150,7 @@ class DiffusionEngine(pl.LightningModule):
                 )
                 all_out.append(out)
         z = torch.cat(all_out, dim=0)
-        z = self.scale_factor * z
+        # z = self.scale_factor * z
         return z
 
     def forward(self, x, batch):
@@ -366,12 +366,15 @@ class DiffusionEngine(pl.LightningModule):
 
         N = min(x.shape[0], N)
         x = x.to(self.device)[:N]
-        log["inputs"] = x
+        # log["inputs"] = x
         z = self.encode_first_stage(x)
         reconstructions = self.decode_first_stage(z)
+        gt_images = batch["frames"]
+        log["inputs"] = gt_images
 
         print("X SHAPE: ", x.shape)
         print("RECONSTRUCTIONS SHAPE: ", reconstructions.shape)
+        print("BATCH FRAMES SHAPE: ", gt_images.shape)
         
         # Handle SEVA multi-view reconstructions: reshape [batch_size*num_images, C, H, W] -> [batch_size, num_images, C, H, W]
         if reconstructions.dim() == 4 and reconstructions.shape[0] == x.shape[0] * x.shape[1]:

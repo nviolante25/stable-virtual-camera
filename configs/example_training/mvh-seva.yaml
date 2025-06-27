@@ -130,8 +130,8 @@ data:
     latents_dir: /workspace/datasetvol/mvhuman_data/mv_latents
     batch_size: 3
     num_workers: 1
-    num_images: 4
-    only_include: ["100008", "100099"]
+    num_images: 8
+    only_include: ["100012", "100013"]
 
 lightning:
   modelcheckpoint:

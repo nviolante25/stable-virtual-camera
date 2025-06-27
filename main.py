@@ -379,7 +379,6 @@ class ImageLogger(Callback):
         save_dir,
         split,
         images,
-        gt_images,
         masks,
         global_step,
         current_epoch,
@@ -430,14 +429,14 @@ class ImageLogger(Callback):
 
                     # img = self.tensor_to_image(img) # borrowed from autoenc.py (TODO: check if samples & reconstruction have same value range)
 
-                    bordered_img = self.add_colored_border(img, border_color, border_width=4)
+                    bordered_img = self.add_colored_border(img, border_color, border_width=24)
                     print("[POST]bordered_img.shape: ", bordered_img.shape) 
                     bordered_images.append(bordered_img)
                 
                 # Stack bordered images and create grid
                 bordered_tensor = torch.stack(bordered_images)
                 print("bordered_tensor.shape: ", bordered_tensor.shape)
-                grid = torchvision.utils.make_grid(bordered_tensor, nrow=4, padding=4)
+                grid = torchvision.utils.make_grid(bordered_tensor, nrow=4, padding=24)
                 print("grid.shape: ", grid.shape)
                 
                 if self.rescale:
@@ -498,7 +497,6 @@ class ImageLogger(Callback):
                 )
             
             masks = batch["mask"] # (B, max_images) binary boolean tensor
-            gt_images = batch["frames"] # (B, max_images, C, H, W)
 
             print("AFTER LOGGING")
 
@@ -529,7 +527,6 @@ class ImageLogger(Callback):
                 pl_module.logger.save_dir,
                 split,
                 images,
-                gt_images,
                 masks,
                 pl_module.global_step,
                 pl_module.current_epoch,
