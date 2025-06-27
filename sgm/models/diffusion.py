@@ -15,6 +15,8 @@ from ..modules.ema import LitEma
 from ..util import (default, disabled_train, get_obj_from_str,
                     instantiate_from_config, log_txt_as_img)
 
+from autoenc import AutoEncoder
+
 def compute_psnr(pred, target):
     mse = torch.nn.functional.mse_loss(pred, target)
     return 10 * torch.log10(1.0 / mse)
@@ -127,7 +129,8 @@ class DiffusionEngine(pl.LightningModule):
         all_out = []
         with torch.autocast("cuda", enabled=not self.disable_first_stage_autocast):
             for n in range(n_rounds):
-                if isinstance(self.first_stage_model.decoder, VideoDecoder):
+                if hasattr(self.first_stage_model, "decoder") and \
+                    isinstance(self.first_stage_model.decoder, VideoDecoder):
                     kwargs = {"timesteps": len(z[n * n_samples : (n + 1) * n_samples])}
                 else:
                     kwargs = {}
@@ -372,10 +375,6 @@ class DiffusionEngine(pl.LightningModule):
         gt_images = batch["frames"]
         log["inputs"] = gt_images[:N]
 
-        print("X SHAPE: ", x.shape)
-        print("RECONSTRUCTIONS SHAPE: ", reconstructions.shape)
-        print("BATCH FRAMES SHAPE: ", gt_images.shape)
-        
         # Handle SEVA multi-view reconstructions: reshape [batch_size*num_images, C, H, W] -> [batch_size, num_images, C, H, W]
         if reconstructions.dim() == 4 and reconstructions.shape[0] == x.shape[0] * x.shape[1]:
             # This is a SEVA multi-view output

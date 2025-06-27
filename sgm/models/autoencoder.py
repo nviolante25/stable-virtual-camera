@@ -631,7 +631,6 @@ class DecoderOnlyAutoencoderKL(AbstractAutoencoder):
         super().__init__(**kwargs)
         self.encoder = lambda x: x  # IdentityFirstStage basically
         self.module = instantiate_from_config(module)
-        self.decoder = self.module.module.decoder
     
     def get_input(self, x: Any) -> Any:
         return x
@@ -644,13 +643,13 @@ class DecoderOnlyAutoencoderKL(AbstractAutoencoder):
         if len(x.shape) == 5:  # [batch, frames, channels, height, width]
             batch_size, num_frames = x.shape[:2]
             x = rearrange(x, "b f c h w -> (b f) c h w")
-            decoded = self.decoder(x, **decoder_kwargs)
+            decoded = self.module.decode(x, **decoder_kwargs)
             # Reshape back to multi-view format
             decoded = rearrange(decoded, "(b f) c h w -> b f c h w", b=batch_size, f=num_frames)
             return decoded
         else:
             # Handle regular data
-            return self.decoder(x, **decoder_kwargs)
+            return self.module.decode(x / 0.18215, **decoder_kwargs)
 
 
 class AEIntegerWrapper(nn.Module):

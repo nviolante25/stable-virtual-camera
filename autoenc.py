@@ -141,8 +141,10 @@ if __name__ == "__main__":
     def tensor_to_image(tensor):
         # Denormalize and convert to PIL image
         tensor = tensor.cpu().squeeze(0)
+        # (-1, 1) -> (0, 1)
         tensor = tensor * 0.5 + 0.5  # Denormalize
-        tensor = torch.clamp(tensor, 0, 1)
+
+        tensor = torch.clamp(tensor, 0, 1) # this is desired
         img = transforms.ToPILImage()(tensor)
         return img
     

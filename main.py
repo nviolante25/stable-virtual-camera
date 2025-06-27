@@ -369,8 +369,8 @@ class ImageLogger(Callback):
         # Denormalize and convert to PIL image
         tensor = tensor.cpu().squeeze(0)
         tensor = tensor * 0.5 + 0.5  # Denormalize
+        # tensor = torch.clamp(tensor, 0, 1)
         tensor = torch.clamp(tensor, 0, 1)
-        # img = transforms.ToPILImage()(tensor)
         return tensor
 
     @rank_zero_only
@@ -422,22 +422,30 @@ class ImageLogger(Callback):
                     else: # targets
                         border_color = (101.0, 174.0, 219.0)  # blue
 
-                    # img = self.tensor_to_image(img) # borrowed from autoenc.py (TODO: check if samples & reconstruction have same value range)
-
+                    print("before img transformations")    
+                    print("img.shape: ", img.shape)
+                    print("img.min(): ", img.min())
+                    print("img.max(): ", img.max())
+                    img = self.tensor_to_image(img) # (-1, 1) ->(0, 1)
+                    print("after img transformations")    
+                    print("img.shape: ", img.shape)
+                    print("img.min(): ", img.min())
+                    print("img.max(): ", img.max())
                     bordered_img = self.add_colored_border(img, border_color, border_width=24)
                     print("[POST]bordered_img.shape: ", bordered_img.shape) 
                     bordered_images.append(bordered_img)
                 
                 # Stack bordered images and create grid
-                bordered_tensor = torch.stack(bordered_images)
-                print("bordered_tensor.shape: ", bordered_tensor.shape)
-                grid = torchvision.utils.make_grid(bordered_tensor, nrow=4, padding=24)
+                # bordered_tensor = torch.stack(bordered_images)
+                # print("bordered_tensor.shape: ", bordered_tensor.shape)
+                # grid = torchvision.utils.make_grid(bordered_tensor, nrow=4, padding=24)
+                grid = torchvision.utils.make_grid(bordered_images, nrow=4, padding=24)
                 print("grid.shape: ", grid.shape)
                 
-                if self.rescale:
-                    grid = (grid + 1.0) / 2.0  # -1,1 -> 0,1; c,h,w
+                # if self.rescale:
+                #     grid = (grid + 1.0) / 2.0  # -1,1 -> 0,1; c,h,w
                 
-                grid = grid.transpose(0, 1).transpose(1, 2).squeeze(-1)
+                grid = grid.permute(1, 2, 0).squeeze(-1)
                 grid = grid.numpy()
                 grid = (grid * 255).astype(np.uint8)
                 filename = "{}_gs-{:06}_e-{:06}_b-{:06}.png".format(
