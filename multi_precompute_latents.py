@@ -141,9 +141,9 @@ class VAEWorker:
         images_tensors = torch.stack(images).pin_memory()
         masks_tensors = torch.stack(masks).pin_memory()
 
-        print("in load and preprocess batch")
-        print("images:", images_tensors.shape)
-        print("masks:", masks_tensors.shape)
+        # print("in load and preprocess batch")
+        # print("images:", images_tensors.shape)
+        # print("masks:", masks_tensors.shape)
         
         
         # Vectorized masking operation with optimized broadcasting
@@ -251,7 +251,7 @@ class VAEWorker:
             
             # Convert tensors back to PIL images for saving
             def tensor_to_pil(tensor):
-                print(tensor.shape)
+                # print(tensor.shape)
                 # Denormalize from [-1, 1] to [0, 255]
                 tensor = (tensor + 1) / 2
                 tensor = torch.clamp(tensor, 0, 1)
@@ -285,10 +285,10 @@ class VAEWorker:
         mask_camera_path,
     ):
         """Process all images in a camera directory with optimized batch processing and prefetching"""
-        print("inside process_camera_dir")
-        print("camera_path:", camera_path)
+        # print("inside process_camera_dir")
+        # print("camera_path:", camera_path)
         target_latent_dir = camera_path.replace("mv_captures", "mv_latents").split("/images_lr")[0]
-        print("target_latent_dir:", target_latent_dir)
+        # print("target_latent_dir:", target_latent_dir)
         # GOAL: fill up this dict with all images inside camera
         camera_latents_dict = {}
 
@@ -330,7 +330,7 @@ class VAEWorker:
             # retrieve current batch
             if current_batch_future:
                 batch_images = current_batch_future.result() # these are MASKED
-                print("batch_images:", batch_images.shape)
+                # print("batch_images:", batch_images.shape)
             else:
                 batch_images = []
 
@@ -352,11 +352,7 @@ class VAEWorker:
             try:
                 # Process batch
                 start_time = time.time()
-                print("CURRENT BATCH IMAGES")
-                print(batch_images.shape)
                 latents = self.process_batch(batch_images)
-
-                print("latents:", latents.shape)
                 
                 # OLD -- Save latents in parallel
                 # with ThreadPoolExecutor(max_workers=self.args.save_workers) as executor:
@@ -369,9 +365,9 @@ class VAEWorker:
                         image_path = image_paths[i + j] # inter-batch idx 'i' + infra-batch idx 'j'
                         cam_id = os.path.basename(os.path.dirname(image_path))
                         timestep = os.path.basename(image_path).split('_')[0]
-                        print("cam_id:", cam_id)
-                        print("timestep:", timestep)
-                        print("latent shape:", latents[j].shape)
+                        # print("cam_id:", cam_id)
+                        # print("timestep:", timestep)
+                        # print("latent shape:", latents[j].shape)
                         key = f"{cam_id}.{timestep}"
                         camera_latents_dict[key] = latents[j].numpy()
                 except Exception as e:
