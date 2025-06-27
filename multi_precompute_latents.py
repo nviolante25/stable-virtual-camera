@@ -420,16 +420,16 @@ class VAEWorker:
                 continue
                 
             # Create temporary file to indicate processing is in progress
-            # tmp_file = os.path.join(target_subject_path, ".processing")
-            # if os.path.exists(tmp_file):
-            #     print(f"Worker {self.rank}: Skipping {subject} - being processed by another worker. ")
-            #     continue
+            tmp_file = os.path.join(target_subject_path, ".processing")
+            if os.path.exists(tmp_file):
+                print(f"Worker {self.rank}: Skipping {subject} - being processed by another worker. ")
+                continue
 
             # Create directory FIRST, then create the processing file
             os.makedirs(target_subject_path, exist_ok=True)
             
-            # with open(tmp_file, 'w') as f:
-            #     f.write(str(os.getpid()))
+            with open(tmp_file, 'w') as f:
+                f.write(str(os.getpid()))
 
             print(f"Worker {self.rank}: Processing subject {subject}")
             
@@ -485,20 +485,20 @@ class VAEWorker:
                 if subject_latents_dict:
                     np.savez_compressed(os.path.join(target_subject_path, f"{subject}.npz"), **subject_latents_dict)
                     # Remove .processing indicator file safely
-                    # try:
-                    #     os.remove(tmp_file)
-                    # except FileNotFoundError:
-                    #     pass  # File was already removed
+                    try:
+                        os.remove(tmp_file)
+                    except FileNotFoundError:
+                        pass  # File was already removed
                     del subject_latents_dict
                     print(f"Worker {self.rank}: Finished subject {subject}.")
                 else:
                     print(f"Worker {self.rank}: No latents processed for subject {subject}")
             except Exception as e:
                 # Remove .processing indicator file safely on error
-                # try:
-                #     os.remove(tmp_file)
-                # except FileNotFoundError:
-                #     pass  # File was already removed
+                try:
+                    os.remove(tmp_file)
+                except FileNotFoundError:
+                    pass  # File was already removed
                 print(f"Worker {self.rank}: Error saving subject NPZ for {subject}: {e}")
 
         print("Finished processing all subjects.")
