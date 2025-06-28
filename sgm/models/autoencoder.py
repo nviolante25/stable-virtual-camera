@@ -649,7 +649,7 @@ class DecoderOnlyAutoencoderKL(AbstractAutoencoder):
             return decoded
         else:
             # Handle regular data
-            return self.module.decode(x / 0.18215, **decoder_kwargs)
+            return self.module.decode(x, **decoder_kwargs)
 
 
 class AEIntegerWrapper(nn.Module):
