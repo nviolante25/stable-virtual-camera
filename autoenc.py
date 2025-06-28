@@ -6,6 +6,7 @@ from PIL import Image
 import torchvision.transforms as transforms
 import wandb
 import numpy as np
+import time
 
 import torch
 from diffusers.models import AutoencoderKL  # type: ignore
@@ -86,7 +87,8 @@ if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="Test autoencoder reconstruction")
     parser.add_argument("--image_path", type=str, help="Path to the input image")
     parser.add_argument("--latent_path", type=str, help="Path to the latent encoding")
-    parser.add_argument("--npzkey", type=str, help="Key to the latent encoding in the npz file")
+    parser.add_argument("--npzkeys", nargs='+', help="Keys to the latent encodings in the npz file")
+    parser.add_argument("--cpu", action="store_true", help="Run on CPU")
 
     args = parser.parse_args()
     
@@ -104,19 +106,35 @@ if __name__ == "__main__":
         image = Image.open(args.image_path).convert("RGB")
         input_tensor = transform(image).unsqueeze(0)  # Add batch dimension
     elif args.latent_path is not None:
-        latent_tensor = torch.from_numpy(np.load(args.latent_path)[args.npzkey])
-        input_tensor = latent_tensor.unsqueeze(0)
+        if args.npzkeys is None:
+            raise ValueError("--npzkeys must be provided when using --latent_path")
+        
+        # Load all specified keys from the npz file
+        npz_data = np.load(args.latent_path)
+        latent_tensors = []
+        for key in args.npzkeys:
+            if key not in npz_data:
+                raise ValueError(f"Key '{key}' not found in npz file")
+            latent_tensors.append(torch.from_numpy(npz_data[key]))
+        
+        # Stack all latent tensors into a batch
+        input_tensor = torch.stack(latent_tensors, dim=0)
     else:
         raise ValueError("Either --image_path or --latent_path must be provided")
     
+
     # Initialize model and run inference
     model = AutoEncoder()
     
     # Move to GPU if available
-    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+    device = torch.device("cuda" if torch.cuda.is_available() and not args.cpu else "cpu")
     model = model.to(device)
     input_tensor = input_tensor.to(device)
+    print("running on device: ", device)
+    print(f"Processing batch of {input_tensor.shape[0]} latents")
     
+    time_start = time.time()
+
     # Generate reconstruction
     with torch.no_grad():
         if args.latent_path is not None:
@@ -125,6 +143,9 @@ if __name__ == "__main__":
         else:
             latents = model.encode(input_tensor)
             reconstructed = model.decode(latents)
+
+    time_end = time.time()
+    print("time taken for batch latent->RGB: ", time_end - time_start)
     
     # Log tensor memory sizes
     def get_tensor_size(tensor):
@@ -140,7 +161,7 @@ if __name__ == "__main__":
     # Convert tensors back to images for visualization
     def tensor_to_image(tensor):
         # Denormalize and convert to PIL image
-        tensor = tensor.cpu().squeeze(0)
+        tensor = tensor.cpu()
         # (-1, 1) -> (0, 1)
         tensor = tensor * 0.5 + 0.5  # Denormalize
 
@@ -148,10 +169,14 @@ if __name__ == "__main__":
         img = transforms.ToPILImage()(tensor)
         return img
     
-    reconstructed_img = tensor_to_image(reconstructed)
+    # Process each reconstructed image in the batch
+    reconstructed_imgs = []
+    for i in range(reconstructed.shape[0]):
+        reconstructed_imgs.append(tensor_to_image(reconstructed[i]))
+    
     print("latents min, max: ", latents.min(), latents.max())
     print("reconstructed min, max: ", reconstructed.min(), reconstructed.max())
-    print(reconstructed_img.size)
+    print(f"Generated {len(reconstructed_imgs)} reconstructed images")
     
     if args.image_path is not None:
         original_img = tensor_to_image(input_tensor)
@@ -161,7 +186,7 @@ if __name__ == "__main__":
         combined_height = original_img.height
         combined_img = Image.new('RGB', (combined_width, combined_height))
         combined_img.paste(original_img, (0, 0))
-        combined_img.paste(reconstructed_img, (original_img.width, 0))
+        combined_img.paste(reconstructed_imgs[0], (original_img.width, 0))
     
     # Calculate memory sizes
     def get_image_size(img):
@@ -171,13 +196,18 @@ if __name__ == "__main__":
         img.save(img_byte_arr, format='PNG')
         return img_byte_arr.tell()
     
-    reconstructed_size = get_image_size(reconstructed_img)
+    reconstructed_sizes = [get_image_size(img) for img in reconstructed_imgs]
     
     # Log to wandb
     if wandb.run is not None:
-        log_dict = {
-            "reconstruction": wandb.Image(reconstructed_img, caption=f"Reconstructed (Tensor: {tensor_sizes['reconstructed']/1024:.1f}KB, File: {reconstructed_size/1024:.1f}KB)")
-        }
+        log_dict = {}
+        
+        # Log each reconstructed image
+        for i, (img, size) in enumerate(zip(reconstructed_imgs, reconstructed_sizes)):
+            log_dict[f"reconstruction_{i}"] = wandb.Image(
+                img, 
+                caption=f"Reconstructed {i} (Tensor: {tensor_sizes['reconstructed']/1024:.1f}KB, File: {size/1024:.1f}KB)"
+            )
         
         if args.image_path is not None:
             original_size = get_image_size(original_img)
