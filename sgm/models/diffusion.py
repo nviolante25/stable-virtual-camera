@@ -346,6 +346,7 @@ class DiffusionEngine(pl.LightningModule):
         ucg_keys: List[str] = None,
         **kwargs,
     ) -> Dict:
+        # no longer using this
         conditioner_input_keys = [e.input_key for e in self.conditioner.embedders] # plucker, concat, replace, mask, None
         if ucg_keys:
             assert all(map(lambda x: x in conditioner_input_keys, ucg_keys)), (

@@ -24,6 +24,8 @@ from pytorch_lightning.trainer import Trainer
 from pytorch_lightning.utilities import rank_zero_only
 
 from sgm.util import exists, instantiate_from_config, isheatmap
+from seva.modules.autoencoder import AutoEncoder
+import threading
 
 MULTINODE_HACKS = True
 
@@ -335,6 +337,7 @@ class ImageLogger(Callback):
         self.log_images_kwargs = log_images_kwargs if log_images_kwargs else {}
         self.log_first_step = log_first_step
         self.log_before_first_step = log_before_first_step
+        self.cpu_decoder = None
 
     def add_colored_border(self, image_tensor, border_color, border_width=2):
         """
@@ -365,6 +368,7 @@ class ImageLogger(Callback):
         del border_tensor
         return bordered_image
 
+    @torch.no_grad()
     def tensor_to_image(self, tensor):
         # Denormalize and convert to PIL image
         tensor = tensor.cpu().squeeze(0)
@@ -372,6 +376,15 @@ class ImageLogger(Callback):
         # tensor = torch.clamp(tensor, 0, 1)
         tensor = torch.clamp(tensor, 0, 1)
         return tensor
+
+    @torch.no_grad()
+    def _convert_valid_log_format(self, latents, x):
+        if latents.dim() == 4 and latents.shape[0] == x.shape[0] * x.shape[1]:
+            batch_size = x.shape[0]
+            num_images = x.shape[1]
+            latents = latents.view(batch_size, num_images, *latents.shape[1:])
+        return latents
+
 
     @rank_zero_only
     def log_local(
@@ -469,39 +482,169 @@ class ImageLogger(Callback):
                         step=pl_module.global_step,
                     )
 
+    @torch.no_grad()
+    def log_local_async(
+        self, 
+        save_dir, 
+        split, 
+        images, 
+        masks, 
+        global_step, 
+        current_epoch, 
+        batch_idx, 
+        pl_module: pl.LightningModule
+    ):
+        # highly ugly code that requires images["inputs"] to exist
+        # ensure tensors are on CPU
+        for k in images:
+            if isinstance(images[k], torch.Tensor):
+                images[k] = images[k].to("cpu")
+        masks = masks.to("cpu")
+
+        # if first time, load decoder directly to CPU
+        if self.cpu_decoder is None:
+            with torch.device("cpu"):
+                self.cpu_decoder = AutoEncoder().eval() # base is used 
+
+        # decode each latent (reconstructions, samples)
+        for k in images:
+            if k == "inputs":
+                # inputs are already in RGB space (and normalized to -1, 1),
+                # so no need to decode
+                continue
+            if isinstance(images[k], torch.Tensor):
+                # decode latents to RGB image space
+                images[k] = self.cpu_decoder.decode(images[k])
+                # convert to Seva output shape [N, num_imgs, C, H, W] 
+                # the 2nd argument is basically to provide (N, num_imgs) 
+                images[k] = self._convert_valid_log_format(images[k], images["inputs"])
+                if self.clamp and not isheatmap(images[k]): # clamp to decoder value range
+                    images[k] = torch.clamp(images[k], -1.0, 1.0)
+
+        # log_local
+        self.log_local(save_dir, split, images, masks, global_step, current_epoch, batch_idx, pl_module)
+
+    
     @rank_zero_only
-    def log_img(self, pl_module, batch, batch_idx, split="train"): #pl_module: DiffusionEngine
+    def log_img(self, pl_module, batch, batch_idx, split="train", sample=True): #pl_module: DiffusionEngine
         print(f"ImageLogger::LOG_IMG inside function from {self.__class__.__name__}")
         check_idx = batch_idx if self.log_on_batch_idx else pl_module.global_step
 
+        # check if we should log at this batch index
         if (
             self.check_frequency(check_idx)
             and hasattr(pl_module, "log_images")  # batch_idx % self.batch_freq == 0
             and callable(pl_module.log_images)
             and self.max_images > 0
         ):
-            print("WITHIN LOG_IMG IF STATEMENT")
+            
             logger = type(pl_module.logger)
             is_train = pl_module.training
             if is_train:
+                # set eval for logs (sample generations before logging)
                 pl_module.eval()
 
-            gpu_autocast_kwargs = {
-                "enabled": self.enable_autocast,  # torch.is_autocast_enabled(),
-                "dtype": torch.get_autocast_gpu_dtype(),
-                "cache_enabled": torch.is_autocast_cache_enabled(),
-            }
-            print("BEFORE logging!")
-            with torch.no_grad(), torch.cuda.amp.autocast(**gpu_autocast_kwargs):
-                # this sholud be where images are logged!
-                print("ImageLogger::Logging images")
-                images = pl_module.log_images(
-                    batch, split=split, **self.log_images_kwargs
-                )
-            
-            masks = batch["mask"] # (B, max_images) binary boolean tensor
+            # OLD -- GPU based logging
+            # gpu_autocast_kwargs = {
+            #     "enabled": self.enable_autocast,  # torch.is_autocast_enabled(),
+            #     "dtype": torch.get_autocast_gpu_dtype(),
+            #     "cache_enabled": torch.is_autocast_cache_enabled(),
+            # }
+            # with torch.no_grad(), torch.cuda.amp.autocast(**gpu_autocast_kwargs):
+            #     # this sholud be where images are logged!
+            #     print("ImageLogger::Logging images")
+            #     # images = pl_module.log_images(
+            #     #     batch, split=split, **self.log_images_kwargs
+            #     # )
 
-            print("AFTER LOGGING")
+            # NEW -- CPU based logging, based on DiffusionEngine.log_images
+            with torch.no_grad():
+                conditioner_input_keys = [e.input_key for e in pl_module.conditioner.embedders]
+                if self.log_images_kwargs.get("ucg_keys"):
+                    ucg_keys = self.log_images_kwargs.get("ucg_keys")
+                    assert all(map(lambda x: x in conditioner_input_keys, ucg_keys)), (
+                        "Each defined ucg key for sampling must be in the provided conditioner input keys,"
+                        f"but we have {ucg_keys} vs. {conditioner_input_keys}"
+                    )
+                else:
+                    ucg_keys = conditioner_input_keys
+
+                log = dict()
+                x = pl_module.get_input(batch) # clean_latent
+                c, uc = pl_module.conditioner.get_unconditional_conditioning(
+                    batch,
+                    force_uc_zero_embeddings=ucg_keys
+                    if len(pl_module.conditioner.embedders) > 0
+                    else [],
+                )
+                sampling_kwargs = {}
+
+                # keep GPU until we have the generated latents
+                N = min(x.shape[0], self.max_images)
+                x = x.to(pl_module.device)[:N]
+                z = pl_module.encode_first_stage(x) # identity; keep encoding on GPU
+
+                for k in c:
+                    if isinstance(c[k], torch.Tensor):
+                        c[k], uc[k] = map(lambda y: y[k][:N].to(pl_module.device), (c, uc))
+                # sample latents for targets
+                if sample:
+                    with pl_module.ema_scope("Plotting"):
+                        samples = pl_module.sample(
+                            c, shape=z.shape[1:], uc=uc, batch_size=N, **sampling_kwargs
+                        )
+
+                print("finished sampling; shapes:")
+                print("x.shape: ", x.shape)
+                print("z.shape: ", z.shape)
+                print("samples.shape: ", samples.shape)
+
+                # async decoder + log to wandb stage -- move to CPU
+                z = z.to("cpu")
+                samples = samples.to("cpu")
+                gt_images = batch["frames"][:N].to("cpu") # choose first N from B
+
+                # unlike in original impl., we have yet to decode the latents; hence, pre-image
+                pre_images = {}
+                pre_images["inputs"] = gt_images
+                pre_images["reconstructions"] = z
+                pre_images["samples"] = samples
+
+                # flatten for decoder
+                for k in pre_images: # images is dict{inputs, reconstructions, samples} (as in diffusion.py)
+                    if isinstance(pre_images[k], torch.Tensor):
+                        # Handle SEVA multi-view tensors: [batch_size, num_images, C, H, W]
+                        if pre_images[k].dim() == 5:
+                            batch_size, num_images = pre_images[k].shape[:2]
+                            total_images = batch_size * num_images
+                            N = min(total_images, self.max_images)
+                            # Flatten to [batch_size*num_images, C, H, W] for easier slicing
+                            pre_images[k] = pre_images[k].view(total_images, *pre_images[k].shape[2:])
+                            pre_images[k] = pre_images[k][:N]
+                        else:
+                            N = min(pre_images[k].shape[0], self.max_images)
+                            if not isheatmap(pre_images[k]):
+                                pre_images[k] = pre_images[k][:N]
+                        
+                        pre_images[k] = pre_images[k].detach().float().cpu()
+                        # move clamping POST-decoder (which has range -1, 1)
+                        # if self.clamp and not isheatmap(pre_images[k]):
+                        #     pre_images[k] = torch.clamp(pre_images[k], -1.0, 1.0)
+
+                masks = batch["mask"] # (B, max_images) binary boolean tensor
+                masks = masks.reshape(-1)[:N].detach().cpu()
+
+                if is_train: # if was training previously, set it back
+                    # this shouldn't interfere, since the VAE is frozen anyways
+                    pl_module.train()
+
+                def async_log_caller():
+                    self.log_local_async(pl_module.logger.save_dir, split, pre_images, masks, pl_module.global_step, pl_module.current_epoch, batch_idx, pl_module)
+                    print("[Image Logger] Images logged; thread closed.")
+
+                thread = threading.Thread(target=async_log_caller, daemon=False)
+                thread.start()
+            
 
             for k in images: # images is dict{inputs, reconstructions, samples} (as in diffusion.py)
                 if isinstance(images[k], torch.Tensor):
@@ -524,24 +667,7 @@ class ImageLogger(Callback):
 
             # flatten masks to correspond with images[:N], detach
             masks = masks.reshape(-1)[:N].detach().cpu()
-            print("masks: ", masks)
-            print("ImageLogger::calling log_local")
-            self.log_local(
-                pl_module.logger.save_dir,
-                split,
-                images,
-                masks,
-                pl_module.global_step,
-                pl_module.current_epoch,
-                batch_idx,
-                pl_module=pl_module
-                if isinstance(pl_module.logger, WandbLogger)
-                else None,
-            )
-            print("ImageLogger::finished log_local")
 
-            if is_train:
-                pl_module.train()
 
     def check_frequency(self, check_idx):
         if ((check_idx % self.batch_freq) == 0 or (check_idx in self.log_steps)) and (
