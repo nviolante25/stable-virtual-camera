@@ -1,5 +1,5 @@
 model:
-  base_learning_rate: 1.0e-4
+  base_learning_rate: 1.0e-8
   target: sgm.models.diffusion.DiffusionEngine
   params:
     scale_factor: 0.18215
@@ -26,34 +26,49 @@ model:
         discretization_config:
           target: sgm.modules.diffusionmodules.discretizer.LegacyDDPMDiscretization
 
+    # test original Seva model (no LoRA): results pretty much the same as with LoRA initially
     network_config:
-      target: seva.modules.lora_wrapper.SevaLoRAWrapper
+      target: seva.utils.load_model
       params:
-        seva_model_config:
-          target: seva.model.Seva
-          params:
-            params:
-              in_channels: 11
-              model_channels: 320  # for Seva.time_embed
-              out_channels: 4
-              num_frames: 8
-              num_res_blocks: 2
-              attention_resolutions: [4, 2, 1]
-              channel_mult: [1, 2, 4, 4]
-              num_head_channels: 64
-              transformer_depth: [1, 1, 1, 1]
-              context_dim: 1024
-              dense_in_channels: 6
-              dropout: 0.0
-              unflatten_names: ["middle_ds8", "output_ds4", "output_ds2"]
-              ckpt_path: null
-        self_attn_rank: 4
-        cross_attn_rank: 8
-        alpha: 4.0
-        dropout: 0.0
-        target_modules: ["TransformerBlockTimeMix", "MultiviewTransformer", "TransformerBlock"]
-        keys_to_lora: ["q", "k", "v"]
-        excluded_modules: []
+        pretrained_model_name_or_path: "stabilityai/stable-virtual-camera"
+        weight_name: "model.safetensors"
+        device: "cuda"
+        verbose: True
+        freeze: True # only freezes input and output blocks
+
+    # network_config:
+    #   target: seva.modules.lora_wrapper.SevaLoRAWrapper
+    #   params:
+    #     seva_model_config:
+    #       # target: seva.model.Seva
+    #       target: seva.utils.load_model
+    #       params:
+    #         # params:
+    #         #   in_channels: 11
+    #         #   model_channels: 320  # for Seva.time_embed
+    #         #   out_channels: 4
+    #         #   num_frames: 8
+    #         #   num_res_blocks: 2
+    #         #   attention_resolutions: [4, 2, 1]
+    #         #   channel_mult: [1, 2, 4, 4]
+    #         #   num_head_channels: 64
+    #         #   transformer_depth: [1, 1, 1, 1]
+    #         #   context_dim: 1024
+    #         #   dense_in_channels: 6
+    #         #   dropout: 0.0
+    #         #   unflatten_names: ["middle_ds8", "output_ds4", "output_ds2"]
+    #         #   ckpt_path: null
+    #         pretrained_model_name_or_path: "stabilityai/stable-virtual-camera"
+    #         weight_name: "model.safetensors"
+    #         device: "cuda"
+    #         verbose: True
+    #     self_attn_rank: 4
+    #     cross_attn_rank: 8
+    #     alpha: 4.0
+    #     dropout: 0.0
+    #     target_modules: ["TransformerBlockTimeMix", "MultiviewTransformer", "TransformerBlock"]
+    #     keys_to_lora: ["q", "k", "v"]
+    #     excluded_modules: []
 
     conditioner_config:
       target: sgm.modules.GeneralConditioner
@@ -126,12 +141,14 @@ model:
 data:
   target: seva.data.mvh_dataloader.MVHumanNetLoader
   params:
-    root_dir: /workspace/datasetvol/mvhuman_data/mv_captures
-    latents_dir: /workspace/datasetvol/mvhuman_data/mv_latents
-    batch_size: 1
-    num_workers: 1
+    # root_dir: /workspace/datasetvol/mvhuman_data/mv_captures
+    # latents_dir: /workspace/datasetvol/mvhuman_data/mv_latents
+    root_dir: /home/stone/dev/datasets/mvhumannet_samples/mv_captures
+    latents_dir: /home/stone/dev/datasets/mvhumannet_samples/mv_latents
+    batch_size: 2
+    num_workers: 16
     num_images: 8
-    only_include: ["100012", "100013"]
+    only_include: ["100001", "100002"]
 
 lightning:
   modelcheckpoint:
@@ -148,9 +165,9 @@ lightning:
       params:
         disabled: False
         enable_autocast: False
-        batch_frequency: 4
-        max_images: 4
-        increase_log_steps: False
+        batch_frequency: 1000
+        max_images: 8
+        increase_log_steps: True # for debug, set True
         log_first_step: False
         log_images_kwargs:
           use_ema_scope: False

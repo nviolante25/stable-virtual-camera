@@ -182,14 +182,14 @@ class Seva(nn.Module):
             missing, unexpected = self.load_state_dict(state_dict, strict=False, assign=True)
             print_load_warning(missing, unexpected)
 
-        # if freeze_layers:
-        #     print("layers of seva are FROZEN")
-        #     for param in self.input_blocks.parameters():
-        #         param.requires_grad = False
-        #     for param in self.middle_block.parameters():
-        #         param.requires_grad = False
-        #     for param in self.output_blocks.parameters():
-        #         param.requires_grad = False
+        if freeze_layers:
+            print("layers of seva are FROZEN")
+            for param in self.input_blocks.parameters():
+                param.requires_grad = False
+            for param in self.middle_block.parameters():
+                param.requires_grad = True
+            for param in self.output_blocks.parameters():
+                param.requires_grad = False
 
     def forward(
         self,

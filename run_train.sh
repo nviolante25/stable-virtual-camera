@@ -1,0 +1,1 @@
+python main.py --base configs/example_training/mvh-seva.yaml --wandb --projectname seva-on-mvhnet

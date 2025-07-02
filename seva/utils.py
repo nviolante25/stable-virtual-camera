@@ -31,6 +31,7 @@ def load_model(
     weight_name: str = "model.safetensors",
     device: str | torch.device = "cuda",
     verbose: bool = False,
+    freeze: bool = True,
 ) -> Seva:
     if os.path.isdir(pretrained_model_name_or_path):
         weight_path = os.path.join(pretrained_model_name_or_path, weight_name)
@@ -48,7 +49,7 @@ def load_model(
     )
 
     with torch.device("meta"):
-        model = Seva(SevaParams()).to(torch.bfloat16)
+        model = Seva(SevaParams(), freeze_layers=freeze).to(torch.bfloat16)
 
     missing, unexpected = model.load_state_dict(state_dict, strict=False, assign=True)
     if verbose:

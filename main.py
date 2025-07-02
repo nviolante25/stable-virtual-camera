@@ -26,6 +26,9 @@ from pytorch_lightning.utilities import rank_zero_only
 from sgm.util import exists, instantiate_from_config, isheatmap
 from seva.modules.autoencoder import AutoEncoder
 import threading
+import queue
+from typing import Dict
+from dataclasses import dataclass
 
 MULTINODE_HACKS = True
 
@@ -308,6 +311,18 @@ class SetupCallback(Callback):
                     pass
 
 
+@dataclass
+class LogTask:
+    """Data class to hold logging task information"""
+    save_dir: str
+    split: str
+    images: Dict[str, torch.Tensor]
+    masks: torch.Tensor
+    global_step: int
+    current_epoch: int
+    batch_idx: int
+    pl_module: pl.LightningModule
+
 class ImageLogger(Callback):
     def __init__(
         self,
@@ -337,7 +352,132 @@ class ImageLogger(Callback):
         self.log_images_kwargs = log_images_kwargs if log_images_kwargs else {}
         self.log_first_step = log_first_step
         self.log_before_first_step = log_before_first_step
+
+        # for logging
         self.cpu_decoder = None
+        self.log_queue = queue.Queue()
+        self.log_thread = None
+        self.shutdown_event = threading.Event()
+        self._start_log_thread()
+
+    def _start_log_thread(self):
+        """Start the logging thread"""
+        if self.log_thread is None:
+            self.log_thread = threading.Thread(target=self._log_worker, daemon=True)
+            self.log_thread.start()
+
+    def _log_worker(self):
+        """Background worker that processes logging tasks from the queue"""
+        print("[ImageLogger] Log worker started")
+        
+        # Initialize CPU decoder for the worker thread
+        with torch.device("cpu"):
+            self.cpu_decoder = AutoEncoder().eval()
+        
+        while not self.shutdown_event.is_set():
+            try:
+                # Wait for a task with timeout to allow checking shutdown event
+                task = self.log_queue.get(timeout=1.0)
+                if task is None:  # Shutdown signal
+                    break
+                
+                print(f"[ImageLogger] Processing log task for step {task.global_step}")
+                self._process_log_task(task)
+                self.log_queue.task_done()
+            except queue.Empty:
+                continue # polling
+            except Exception as e:
+                print(f"[ImageLogger] Error in log worker: {e}")
+                if task is not None:
+                    self.log_queue.task_done()
+        
+        # Process any remaining tasks before exiting
+        print("[ImageLogger] Processing remaining tasks in queue...")
+        while True:
+            try:
+                task = self.log_queue.get_nowait()
+                if task is None:
+                    break
+                print(f"[ImageLogger] Processing final log task for step {task.global_step}")
+                self._process_log_task(task)
+                self.log_queue.task_done()
+            except queue.Empty:
+                break
+        
+        print("[ImageLogger] Log worker stopped")
+
+    def _process_log_task(self, task: LogTask):
+        """Process a single logging task"""
+        try:
+            # Move data to CPU and decode
+            images = {}
+            for k in task.images:
+                if isinstance(task.images[k], torch.Tensor):
+                    images[k] = task.images[k].to("cpu")
+            masks = task.masks.to("cpu")
+
+            # Decode latents
+            for k in images:
+                if k == "inputs":
+                    continue  # Already in RGB space
+                if isinstance(images[k], torch.Tensor):
+                    images[k] = self.cpu_decoder.decode(images[k])
+                    images[k] = self._convert_valid_log_format(images[k], images["inputs"])
+                    if self.clamp and not isheatmap(images[k]):
+                        images[k] = torch.clamp(images[k], -1.0, 1.0)
+
+            # Perform the actual logging
+            self.log_local(
+                task.save_dir, task.split, images, masks,
+                task.global_step, task.current_epoch, task.batch_idx, task.pl_module
+            )
+            
+        except Exception as e:
+            print(f"[ImageLogger] Error processing log task: {e}")
+
+    def _queue_log_task(self, save_dir, split, images, masks, global_step, current_epoch, batch_idx, pl_module):
+        """Queue a logging task for background processing"""
+        if self.shutdown_event.is_set():
+            print("[ImageLogger] Logger is shutting down, skipping log task")
+            return
+            
+        task = LogTask(
+            save_dir=save_dir,
+            split=split,
+            images=images,
+            masks=masks,
+            global_step=global_step,
+            current_epoch=current_epoch,
+            batch_idx=batch_idx,
+            pl_module=pl_module
+        )
+        
+        try:
+            # Non-blocking put with timeout
+            self.log_queue.put(task, timeout=0.1)
+            print(f"[ImageLogger] Queued log task for step {global_step}")
+        except queue.Full:
+            print(f"[ImageLogger] Queue full, skipping log task for step {global_step}")
+
+    def shutdown(self):
+        """Gracefully shutdown the logging thread"""
+        print("[ImageLogger] Shutting down logging thread...")
+        self.shutdown_event.set()
+        
+        # Send shutdown signal to queue
+        try:
+            self.log_queue.put(None, timeout=1.0)
+        except queue.Full:
+            pass
+        
+        # Wait for thread to finish (with timeout)
+        if self.log_thread and self.log_thread.is_alive():
+            self.log_thread.join(timeout=8.0 * 60.0) # it can take 8 minutes to log 4 images
+            if self.log_thread.is_alive():
+                print("[ImageLogger] Warning: Log thread did not stop gracefully")
+        
+        print("[ImageLogger] Logging thread shutdown complete")
+    
 
     def add_colored_border(self, image_tensor, border_color, border_width=2):
         """
@@ -398,6 +538,7 @@ class ImageLogger(Callback):
         batch_idx,
         pl_module: Union[None, pl.LightningModule] = None,
     ):
+        print("inside ImageLogger::log_local")
         root = os.path.join(save_dir, "images", split)
         print("ImageLogger::log_local:rootdir to save images: ", root)
         print("number of images: ", len(images))
@@ -482,49 +623,6 @@ class ImageLogger(Callback):
                         step=pl_module.global_step,
                     )
 
-    @torch.no_grad()
-    def log_local_async(
-        self, 
-        save_dir, 
-        split, 
-        images, 
-        masks, 
-        global_step, 
-        current_epoch, 
-        batch_idx, 
-        pl_module: pl.LightningModule
-    ):
-        # highly ugly code that requires images["inputs"] to exist
-        # ensure tensors are on CPU
-        for k in images:
-            if isinstance(images[k], torch.Tensor):
-                images[k] = images[k].to("cpu")
-        masks = masks.to("cpu")
-
-        # if first time, load decoder directly to CPU
-        if self.cpu_decoder is None:
-            with torch.device("cpu"):
-                self.cpu_decoder = AutoEncoder().eval() # base is used 
-
-        # decode each latent (reconstructions, samples)
-        for k in images:
-            if k == "inputs":
-                # inputs are already in RGB space (and normalized to -1, 1),
-                # so no need to decode
-                continue
-            if isinstance(images[k], torch.Tensor):
-                # decode latents to RGB image space
-                images[k] = self.cpu_decoder.decode(images[k])
-                # convert to Seva output shape [N, num_imgs, C, H, W] 
-                # the 2nd argument is basically to provide (N, num_imgs) 
-                images[k] = self._convert_valid_log_format(images[k], images["inputs"])
-                if self.clamp and not isheatmap(images[k]): # clamp to decoder value range
-                    images[k] = torch.clamp(images[k], -1.0, 1.0)
-
-        # log_local
-        self.log_local(save_dir, split, images, masks, global_step, current_epoch, batch_idx, pl_module)
-
-    
     @rank_zero_only
     def log_img(self, pl_module, batch, batch_idx, split="train", sample=True): #pl_module: DiffusionEngine
         print(f"ImageLogger::LOG_IMG inside function from {self.__class__.__name__}")
@@ -638,35 +736,34 @@ class ImageLogger(Callback):
                     # this shouldn't interfere, since the VAE is frozen anyways
                     pl_module.train()
 
-                def async_log_caller():
-                    self.log_local_async(pl_module.logger.save_dir, split, pre_images, masks, pl_module.global_step, pl_module.current_epoch, batch_idx, pl_module)
-                    print("[Image Logger] Images logged; thread closed.")
-
-                thread = threading.Thread(target=async_log_caller, daemon=False)
-                thread.start()
+                # add this iteration's images to the CPU-based logger queue
+                self._queue_log_task(
+                    pl_module.logger.save_dir, split, pre_images, masks,
+                    pl_module.global_step, pl_module.current_epoch, batch_idx, pl_module
+                )
             
 
-            for k in images: # images is dict{inputs, reconstructions, samples} (as in diffusion.py)
-                if isinstance(images[k], torch.Tensor):
-                    # Handle SEVA multi-view tensors: [batch_size, num_images, C, H, W]
-                    if images[k].dim() == 5:
-                        batch_size, num_images = images[k].shape[:2]
-                        total_images = batch_size * num_images
-                        N = min(total_images, self.max_images)
-                        # Flatten to [batch_size*num_images, C, H, W] for easier slicing
-                        images[k] = images[k].view(total_images, *images[k].shape[2:])
-                        images[k] = images[k][:N]
-                    else:
-                        N = min(images[k].shape[0], self.max_images)
-                        if not isheatmap(images[k]):
-                            images[k] = images[k][:N]
+            # for k in images: # images is dict{inputs, reconstructions, samples} (as in diffusion.py)
+            #     if isinstance(images[k], torch.Tensor):
+            #         # Handle SEVA multi-view tensors: [batch_size, num_images, C, H, W]
+            #         if images[k].dim() == 5:
+            #             batch_size, num_images = images[k].shape[:2]
+            #             total_images = batch_size * num_images
+            #             N = min(total_images, self.max_images)
+            #             # Flatten to [batch_size*num_images, C, H, W] for easier slicing
+            #             images[k] = images[k].view(total_images, *images[k].shape[2:])
+            #             images[k] = images[k][:N]
+            #         else:
+            #             N = min(images[k].shape[0], self.max_images)
+            #             if not isheatmap(images[k]):
+            #                 images[k] = images[k][:N]
                     
-                    images[k] = images[k].detach().float().cpu()
-                    if self.clamp and not isheatmap(images[k]):
-                        images[k] = torch.clamp(images[k], -1.0, 1.0)
+            #         images[k] = images[k].detach().float().cpu()
+            #         if self.clamp and not isheatmap(images[k]):
+            #             images[k] = torch.clamp(images[k], -1.0, 1.0)
 
-            # flatten masks to correspond with images[:N], detach
-            masks = masks.reshape(-1)[:N].detach().cpu()
+            # # flatten masks to correspond with images[:N], detach
+            # masks = masks.reshape(-1)[:N].detach().cpu()
 
 
     def check_frequency(self, check_idx):
@@ -895,6 +992,7 @@ if __name__ == "__main__":
         else:
             gpuinfo = trainer_config["devices"]
             print(f"Running on GPUs {gpuinfo}")
+            gpuinfo = [gpuinfo] # ! - CUDA Accelerate wants this as a list; if not using, comment this out
             cpu = False
         trainer_opt = argparse.Namespace(**trainer_config)
         lightning_config.trainer = trainer_config

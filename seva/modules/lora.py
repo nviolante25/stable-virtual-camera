@@ -27,7 +27,7 @@ class LoRALinear(nn.Module):
         self.dropout = nn.Dropout(dropout)
         
         # Initialize weights
-        nn.init.kaiming_uniform_(self.lora_down.weight, a=math.sqrt(5))
+        nn.init.normal_(self.lora_down.weight, std=1.0/rank)
         nn.init.zeros_(self.lora_up.weight)
 
         # Ensure LoRA parameters require gradients
@@ -38,79 +38,168 @@ class LoRALinear(nn.Module):
         return self.lora_up(self.dropout(self.lora_down(x))) * self.scaling
 
 
-class LoRAAttention(nn.Module):
+class LoRAAttentionWrapper(nn.Module):
+    """Wraps existing attention layers with LoRA instead of replacing them"""
     def __init__(
         self,
-        query_dim: int,
-        context_dim: Optional[int] = None,
-        heads: int = 8,
-        dim_head: int = 64,
-        dropout: float = 0.0,
+        original_attn,
         rank: int = 4,
         alpha: float = 4.0,
+        dropout: float = 0.0,
         keys_to_lora: list[str] = ["q", "k", "v"],
     ):
         super().__init__()
-        self.heads = heads
-        self.dim_head = dim_head
+        self.original_attn = original_attn
         self.keys_to_lora = keys_to_lora
-        inner_dim = dim_head * heads
-        context_dim = context_dim or query_dim
-
-        # Original attention layers
-        self.to_q = nn.Linear(query_dim, inner_dim, bias=False)
-        self.to_k = nn.Linear(context_dim, inner_dim, bias=False)
-        self.to_v = nn.Linear(context_dim, inner_dim, bias=False)
-        self.to_out = nn.Sequential(
-            nn.Linear(inner_dim, query_dim), nn.Dropout(dropout)
-        )
+        self.scaling = alpha / rank
         
-        # Freeze original attention layers
-        for param in self.to_q.parameters():
+        # Freeze original attention parameters
+        for param in self.original_attn.parameters():
             param.requires_grad = False
-        for param in self.to_k.parameters():
-            param.requires_grad = False
-        for param in self.to_v.parameters():
-            param.requires_grad = False
-        for param in self.to_out.parameters():
-            param.requires_grad = False
-
-        # LoRA layers
+        
+        # Create LoRA layers only
         if "q" in self.keys_to_lora:
-            self.lora_q = LoRALinear(query_dim, inner_dim, rank=rank, alpha=alpha, dropout=dropout)
+            self.lora_q = LoRALinear(
+                original_attn.to_q.in_features, 
+                original_attn.to_q.out_features, 
+                rank=rank, 
+                alpha=alpha, 
+                dropout=dropout
+            )
         if "k" in self.keys_to_lora:
-            self.lora_k = LoRALinear(context_dim, inner_dim, rank=rank, alpha=alpha, dropout=dropout)
+            self.lora_k = LoRALinear(
+                original_attn.to_k.in_features, 
+                original_attn.to_k.out_features, 
+                rank=rank, 
+                alpha=alpha, 
+                dropout=dropout
+            )
         if "v" in self.keys_to_lora:
-            self.lora_v = LoRALinear(context_dim, inner_dim, rank=rank, alpha=alpha, dropout=dropout)
+            self.lora_v = LoRALinear(
+                original_attn.to_v.in_features, 
+                original_attn.to_v.out_features, 
+                rank=rank, 
+                alpha=alpha, 
+                dropout=dropout
+            )
         if "o" in self.keys_to_lora:
-            self.lora_out = LoRALinear(inner_dim, query_dim, rank=rank, alpha=alpha, dropout=dropout)
+            self.lora_out = LoRALinear(
+                original_attn.to_out[0].in_features, 
+                original_attn.to_out[0].out_features, 
+                rank=rank, 
+                alpha=alpha, 
+                dropout=dropout
+            )
 
-    def forward(
-        self, x: torch.Tensor, context: Optional[torch.Tensor] = None
-    ) -> torch.Tensor:
-        # Original projections
-        q = self.to_q(x) + self.lora_q(x) if "q" in self.keys_to_lora else self.to_q(x)
+    def forward(self, x: torch.Tensor, context: Optional[torch.Tensor] = None) -> torch.Tensor:
+        # Use original attention's forward logic but add LoRA contributions
         context = context if context is not None else x
-        k = self.to_k(context) + self.lora_k(context) if "k" in self.keys_to_lora else self.to_k(context)
-        v = self.to_v(context) + self.lora_v(context) if "v" in self.keys_to_lora else self.to_v(context)
+        
+        # Original projections + LoRA contributions
+        q = self.original_attn.to_q(x)
+        k = self.original_attn.to_k(context)
+        v = self.original_attn.to_v(context)
+        
+        # Add LoRA contributions
+        if "q" in self.keys_to_lora: q = q + self.lora_q(x)
+        if "k" in self.keys_to_lora: k = k + self.lora_k(context)
+        if "v" in self.keys_to_lora: v = v + self.lora_v(context)
 
-        # Convert to float16 for attention
+        # Convert to float16 for attention (if needed)
         q = q.to(torch.float16)
         k = k.to(torch.float16)
         v = v.to(torch.float16)
 
+        # Use original attention's head splitting logic
         q, k, v = map(
-            lambda t: rearrange(t, "b l (h d) -> b h l d", h=self.heads),
+            lambda t: rearrange(t, "b l (h d) -> b h l d", h=self.original_attn.heads),
             (q, k, v),
         )
+        
+        # Scaled dot-product attention
         with sdpa_kernel(SDPBackend.FLASH_ATTENTION):
             out = F.scaled_dot_product_attention(q, k, v)
         
-        # Convert back to original dtype
         out = out.to(x.dtype)
         out = rearrange(out, "b h l d -> b l (h d)")
-        out = self.to_out(out) + self.lora_out(out) if "o" in self.keys_to_lora else self.to_out(out)
+        out = self.original_attn.to_out(out) + self.lora_out(out) if "o" in self.keys_to_lora else self.original_attn.to_out(out)
+            
         return out
+
+
+# class LoRAAttention(nn.Module):
+#     def __init__(
+#         self,
+#         query_dim: int,
+#         context_dim: Optional[int] = None,
+#         heads: int = 8,
+#         dim_head: int = 64,
+#         dropout: float = 0.0,
+#         rank: int = 4,
+#         alpha: float = 4.0,
+#         keys_to_lora: list[str] = ["q", "k", "v"],
+#     ):
+#         super().__init__()
+#         self.heads = heads
+#         self.dim_head = dim_head
+#         self.keys_to_lora = keys_to_lora
+#         inner_dim = dim_head * heads
+#         context_dim = context_dim or query_dim
+
+#         # Original attention layers
+#         self.to_q = nn.Linear(query_dim, inner_dim, bias=False)
+#         self.to_k = nn.Linear(context_dim, inner_dim, bias=False)
+#         self.to_v = nn.Linear(context_dim, inner_dim, bias=False)
+#         self.to_out = nn.Sequential(
+#             nn.Linear(inner_dim, query_dim), nn.Dropout(dropout)
+#         )
+        
+#         # Freeze original attention layers
+#         for param in self.to_q.parameters():
+#             param.requires_grad = False
+#         for param in self.to_k.parameters():
+#             param.requires_grad = False
+#         for param in self.to_v.parameters():
+#             param.requires_grad = False
+#         for param in self.to_out.parameters():
+#             param.requires_grad = False
+
+#         # LoRA layers
+#         if "q" in self.keys_to_lora:
+#             self.lora_q = LoRALinear(query_dim, inner_dim, rank=rank, alpha=alpha, dropout=dropout)
+#         if "k" in self.keys_to_lora:
+#             self.lora_k = LoRALinear(context_dim, inner_dim, rank=rank, alpha=alpha, dropout=dropout)
+#         if "v" in self.keys_to_lora:
+#             self.lora_v = LoRALinear(context_dim, inner_dim, rank=rank, alpha=alpha, dropout=dropout)
+#         if "o" in self.keys_to_lora:
+#             self.lora_out = LoRALinear(inner_dim, query_dim, rank=rank, alpha=alpha, dropout=dropout)
+
+#     def forward(
+#         self, x: torch.Tensor, context: Optional[torch.Tensor] = None
+#     ) -> torch.Tensor:
+#         # Original projections
+#         q = self.to_q(x) + self.lora_q(x) if "q" in self.keys_to_lora else self.to_q(x)
+#         context = context if context is not None else x
+#         k = self.to_k(context) + self.lora_k(context) if "k" in self.keys_to_lora else self.to_k(context)
+#         v = self.to_v(context) + self.lora_v(context) if "v" in self.keys_to_lora else self.to_v(context)
+
+#         # Convert to float16 for attention
+#         q = q.to(torch.float16)
+#         k = k.to(torch.float16)
+#         v = v.to(torch.float16)
+
+#         q, k, v = map(
+#             lambda t: rearrange(t, "b l (h d) -> b h l d", h=self.heads),
+#             (q, k, v),
+#         )
+#         with sdpa_kernel(SDPBackend.FLASH_ATTENTION):
+#             out = F.scaled_dot_product_attention(q, k, v)
+        
+#         # Convert back to original dtype
+#         out = out.to(x.dtype)
+#         out = rearrange(out, "b h l d -> b l (h d)")
+#         out = self.to_out(out) + self.lora_out(out) if "o" in self.keys_to_lora else self.to_out(out)
+#         return out
 
 # unused for now
 class LoRAFeedForward(nn.Module):

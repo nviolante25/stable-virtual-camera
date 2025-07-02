@@ -575,15 +575,30 @@ class MVHumanNetDataset(Dataset):
 
         camera_mask = torch.ones(self.num_images, dtype=torch.bool)
 
-        # Read extrinsics
-        all_c2ws = np.array([
-            # w2c -> c2w
-            create_transform_matrix(
+
+        def get_c2w(cam):
+            tf_matrix = create_transform_matrix(
                 np.array(extrinsics[cam]['rotation']).T,  # Transpose R for w2c -> c2w
-                -np.array(extrinsics[cam]['rotation']).T @ (np.array(extrinsics[cam]['translation']) * camera_scale)
-            ) for cam in extrinsics.keys()
+                -np.array(extrinsics[cam]['rotation']).T @ (np.array(extrinsics[cam]['translation']) * camera_scale),
+                homogeneous=True
+            )
+
+            rotation_z_180 = np.array([
+                [1, 0, 0, 0],
+                [0, -1, 0, 0],
+                [0, 0, -1, 0],
+                [0, 0, 0, 1]
+            ])
+        
+            # Apply the rotation to the transform matrix (for MVHN-expected coordinate frame)
+            return rotation_z_180 @ tf_matrix @ rotation_z_180
+
+        # Read extrinsics (w2c -> c2w)
+        all_c2ws = np.array([
+            get_c2w(cam) for cam in extrinsics.keys()
         ])
-        all_c2ws = torch.from_numpy(all_c2ws).float()
+
+        all_c2ws = torch.from_numpy(all_c2ws).float() # (total_cameras=48, 4, 4)
         c2ws = all_c2ws[images_permutation]    # choose previously sampled ones only (NOTE: order is unknown right now, need to edit!)
         center_cameras(all_c2ws, c2ws)  # mean center
         scale_cameras(c2ws)
@@ -595,7 +610,7 @@ class MVHumanNetDataset(Dataset):
         # TODO: accept multiple camera intrinsics (for random cropping)
         # NOTE: for preliminary fine-tune testing, we currently account for the uniform center crop
         crop_amount = (self.image_shape[1] - self.target_shape[0]) // 2 # (W - H) // 2: assumes W > H
-        Ks = update_intrinsics(np.array(intrinsics), crop_x=crop_amount, crop_y=0)
+        Ks = update_intrinsics(np.array(intrinsics), crop_x=crop_amount, crop_y=0, scale=1)
         # print("Ks [before norm]: ", Ks)
         Ks = normalize_intrinsics(Ks, self.image_shape[0], self.image_shape[1]) # normalize intrinsics (H,W)
         # print("Ks [after norm]: ", Ks)
