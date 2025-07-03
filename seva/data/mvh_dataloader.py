@@ -7,7 +7,6 @@ from tqdm import tqdm
 from typing import Tuple, Optional, Dict, Union, Callable
 
 from seva.geometry import get_plucker_coordinates
-from seva.modules.autoencoder import AutoEncoder
 from sgm.data.read_write_model import read_model
 from sgm.data.utils_camera import (
     read_intrinsics_colmap,
@@ -494,10 +493,11 @@ class MVHumanNetDataset(Dataset):
         # get camera parameters
         extrinsics = self.cam_params[subject_id]['extrinsics']
         intrinsics = np.array(self.cam_params[subject_id]['intrinsics'])
-        camera_scale = self.cam_params[subject_id]['camera_scale']        
+        camera_scale = self.cam_params[subject_id]['camera_scale'] 
 
-        if self.pre_scale != 1: # update intrinsics (for MVHumanNet)
+        if self.pre_scale != 1: # update intrinsics (for MVHumanNet default 0.5x prescaling)
             intrinsics = update_intrinsics_resize(intrinsics, scale=self.pre_scale)
+
 
         # Sample frames indices
         camera_order = []
@@ -541,9 +541,6 @@ class MVHumanNetDataset(Dataset):
 
             latent_tensors = [npz_data[f"{sample_cam}.{timestep}"] for sample_cam in camera_order]
             clean_latents = torch.stack([torch.from_numpy(latent_tensor) for latent_tensor in latent_tensors])
-            if self.apply_scale_factor: # if precomputed latents are NOT scaled
-                clean_latents = clean_latents * self.scale_factor
-            # ! on precomputed latents, forgot to scale by scale_factor, so we do it here
             # (batch_size, 4, 72, 72)
         else:
             # currently, we REQUIRE precomputed latents, so we throw error
@@ -575,23 +572,14 @@ class MVHumanNetDataset(Dataset):
 
         camera_mask = torch.ones(self.num_images, dtype=torch.bool)
 
-
         def get_c2w(cam):
             tf_matrix = create_transform_matrix(
-                np.array(extrinsics[cam]['rotation']).T,  # Transpose R for w2c -> c2w
-                -np.array(extrinsics[cam]['rotation']).T @ (np.array(extrinsics[cam]['translation']) * camera_scale),
+                np.array(extrinsics[cam]['rotation']),
+                np.array(extrinsics[cam]['translation']) * camera_scale,
                 homogeneous=True
             )
 
-            rotation_z_180 = np.array([
-                [1, 0, 0, 0],
-                [0, -1, 0, 0],
-                [0, 0, -1, 0],
-                [0, 0, 0, 1]
-            ])
-        
-            # Apply the rotation to the transform matrix (for MVHN-expected coordinate frame)
-            return rotation_z_180 @ tf_matrix @ rotation_z_180
+            return np.linalg.inv(tf_matrix) # w2c -> c2w
 
         # Read extrinsics (w2c -> c2w)
         all_c2ws = np.array([
@@ -603,23 +591,15 @@ class MVHumanNetDataset(Dataset):
         center_cameras(all_c2ws, c2ws)  # mean center
         scale_cameras(c2ws)
 
-        # print("all_c2ws.shape: ", all_c2ws.shape)
-        # print("c2ws.shape: ", c2ws.shape)
-
         # create intrinsics tensor, update intrinsics
         # TODO: accept multiple camera intrinsics (for random cropping)
         # NOTE: for preliminary fine-tune testing, we currently account for the uniform center crop
-        crop_amount = (self.image_shape[1] - self.target_shape[0]) // 2 # (W - H) // 2: assumes W > H
-        Ks = update_intrinsics(np.array(intrinsics), crop_x=crop_amount, crop_y=0, scale=1)
-        # print("Ks [before norm]: ", Ks)
+        crop_amount  = (self.image_shape[1] - self.target_shape[0]) // 2 # (W - H) // 2: assumes W > H
+        scale_amount = (self.target_shape[0] / self.image_shape[0])
+        Ks = update_intrinsics(np.array(intrinsics), crop_x=crop_amount, crop_y=0, scale=scale_amount)
         Ks = normalize_intrinsics(Ks, self.image_shape[0], self.image_shape[1]) # normalize intrinsics (H,W)
-        # print("Ks [after norm]: ", Ks)
         Ks = repeat(Ks, 'd1 d2 -> n d1 d2', n=self.num_images) # assumes all intrinsics are the same for now 
         Ks = torch.from_numpy(Ks).float()
-
-
-        # print("Ks.shape: ", Ks.shape)
-        # print("Ks: ", Ks.max(), Ks.min())
 
         w2cs = torch.linalg.inv(c2ws)
         pluckers = get_plucker_coordinates(
@@ -649,7 +629,7 @@ class MVHumanNetDataset(Dataset):
 
         replace = torch.cat( # clean latents and binary mask
             [
-                clean_latents, # * self.scale_factor,
+                clean_latents * self.scale_factor,
                 repeat(
                     input_frames_mask,
                     "n -> n 1 h w",

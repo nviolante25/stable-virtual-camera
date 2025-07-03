@@ -1,5 +1,5 @@
 model:
-  base_learning_rate: 1.0e-8
+  base_learning_rate: 1.0e-6
   target: sgm.models.diffusion.DiffusionEngine
   params:
     scale_factor: 0.18215
@@ -145,10 +145,9 @@ data:
     # latents_dir: /workspace/datasetvol/mvhuman_data/mv_latents
     root_dir: /home/stone/dev/datasets/mvhumannet_samples/mv_captures
     latents_dir: /home/stone/dev/datasets/mvhumannet_samples/mv_latents
-    batch_size: 2
-    num_workers: 16
+    batch_size: 1
+    num_workers: 8
     num_images: 8
-    only_include: ["100001", "100002"]
 
 lightning:
   modelcheckpoint:
@@ -165,7 +164,7 @@ lightning:
       params:
         disabled: False
         enable_autocast: False
-        batch_frequency: 1000
+        batch_frequency: 3000
         max_images: 8
         increase_log_steps: True # for debug, set True
         log_first_step: False

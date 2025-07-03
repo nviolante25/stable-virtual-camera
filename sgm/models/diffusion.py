@@ -15,8 +15,6 @@ from ..modules.ema import LitEma
 from ..util import (default, disabled_train, get_obj_from_str,
                     instantiate_from_config, log_txt_as_img)
 
-from autoenc import AutoEncoder
-
 def compute_psnr(pred, target):
     mse = torch.nn.functional.mse_loss(pred, target)
     return 10 * torch.log10(1.0 / mse)
@@ -122,7 +120,7 @@ class DiffusionEngine(pl.LightningModule):
 
     @torch.no_grad()
     def decode_first_stage(self, z):
-        # z = 1.0 / self.scale_factor * z
+        z = 1.0 / self.scale_factor * z
         n_samples = default(self.en_and_decode_n_samples_a_time, z.shape[0])
 
         n_rounds = math.ceil(z.shape[0] / n_samples)
@@ -153,7 +151,7 @@ class DiffusionEngine(pl.LightningModule):
                 )
                 all_out.append(out)
         z = torch.cat(all_out, dim=0)
-        # z = self.scale_factor * z
+        z = self.scale_factor * z
         return z
 
     def forward(self, x, batch):

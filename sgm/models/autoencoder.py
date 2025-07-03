@@ -630,7 +630,7 @@ class DecoderOnlyAutoencoderKL(AbstractAutoencoder):
     def __init__(self, module, **kwargs):
         super().__init__(**kwargs)
         self.encoder = lambda x: x  # IdentityFirstStage basically
-        self.module = instantiate_from_config(module)
+        self.module = instantiate_from_config(module) # AutoEncoder
     
     def get_input(self, x: Any) -> Any:
         return x
@@ -643,7 +643,9 @@ class DecoderOnlyAutoencoderKL(AbstractAutoencoder):
         if len(x.shape) == 5:  # [batch, frames, channels, height, width]
             batch_size, num_frames = x.shape[:2]
             x = rearrange(x, "b f c h w -> (b f) c h w")
-            decoded = self.module.decode(x, **decoder_kwargs)
+            # ! - ugly HACKY AF; but we essentially counteract @diffusion's decode_first_stage
+            # this makes it so that we avoid double scaling (clean this up later for final release)
+            decoded = self.module.decode(x * self.scale_factor, **decoder_kwargs)
             # Reshape back to multi-view format
             decoded = rearrange(decoded, "(b f) c h w -> b f c h w", b=batch_size, f=num_frames)
             return decoded

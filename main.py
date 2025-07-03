@@ -22,9 +22,9 @@ from pytorch_lightning.callbacks import Callback
 from pytorch_lightning.loggers import WandbLogger
 from pytorch_lightning.trainer import Trainer
 from pytorch_lightning.utilities import rank_zero_only
-
+from diffusers import AutoencoderKL
 from sgm.util import exists, instantiate_from_config, isheatmap
-from seva.modules.autoencoder import AutoEncoder
+
 import threading
 import queue
 from typing import Dict
@@ -322,6 +322,7 @@ class LogTask:
     current_epoch: int
     batch_idx: int
     pl_module: pl.LightningModule
+    scale_factor: float
 
 class ImageLogger(Callback):
     def __init__(
@@ -354,7 +355,14 @@ class ImageLogger(Callback):
         self.log_before_first_step = log_before_first_step
 
         # for logging
-        self.cpu_decoder = None
+        with torch.device("cpu"):
+            self.cpu_decoder = AutoencoderKL.from_pretrained(
+                    "stabilityai/stable-diffusion-2-1-base",
+                    subfolder="vae",
+                    force_download=False,
+                    low_cpu_mem_usage=False,
+                ).eval()
+        self.cpu_decoder.requires_grad_(False)
         self.log_queue = queue.Queue()
         self.log_thread = None
         self.shutdown_event = threading.Event()
@@ -371,8 +379,15 @@ class ImageLogger(Callback):
         print("[ImageLogger] Log worker started")
         
         # Initialize CPU decoder for the worker thread
-        with torch.device("cpu"):
-            self.cpu_decoder = AutoEncoder().eval()
+        # with torch.device("cpu"):
+        #     self.cpu_decoder = AutoencoderKL.from_pretrained(
+        #         "stabilityai/stable-diffusion-2-1-base",
+        #         subfolder="vae",
+        #         force_download=False,
+        #         low_cpu_mem_usage=False,
+        #     ).eval()
+        #     self.cpu_decoder.requires_grad_(False)
+            
         
         while not self.shutdown_event.is_set():
             try:
@@ -421,7 +436,11 @@ class ImageLogger(Callback):
                 if k == "inputs":
                     continue  # Already in RGB space
                 if isinstance(images[k], torch.Tensor):
-                    images[k] = self.cpu_decoder.decode(images[k])
+                    # assuming we use AutoencoderKL
+                    if isinstance(self.cpu_decoder, AutoencoderKL):
+                        images[k] = self.cpu_decoder.decode(images[k] / task.scale_factor).sample
+                    else:
+                        raise Exception("Assumed AutoencoderKL as the cpu_decoder during logging images!")
                     images[k] = self._convert_valid_log_format(images[k], images["inputs"])
                     if self.clamp and not isheatmap(images[k]):
                         images[k] = torch.clamp(images[k], -1.0, 1.0)
@@ -449,7 +468,8 @@ class ImageLogger(Callback):
             global_step=global_step,
             current_epoch=current_epoch,
             batch_idx=batch_idx,
-            pl_module=pl_module
+            pl_module=pl_module,
+            scale_factor=pl_module.scale_factor
         )
         
         try:

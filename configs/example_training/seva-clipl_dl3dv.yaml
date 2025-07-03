@@ -30,23 +30,24 @@ model:
       target: seva.modules.lora_wrapper.SevaLoRAWrapper
       params:
         seva_model_config:
-          target: seva.model.Seva
-          params:
-            params:
-              in_channels: 11
-              model_channels: 320  # for Seva.time_embed
-              out_channels: 4
-              num_frames: 8
-              num_res_blocks: 2
-              attention_resolutions: [4, 2, 1]
-              channel_mult: [1, 2, 4, 4]
-              num_head_channels: 64
-              transformer_depth: [1, 1, 1, 1]
-              context_dim: 1024
-              dense_in_channels: 6
-              dropout: 0.0
-              unflatten_names: ["middle_ds8", "output_ds4", "output_ds2"]
-              ckpt_path: null
+          target: seva.utils.load_model
+          # target: seva.model.Seva
+          # params:
+          #   params:
+          #     in_channels: 11
+          #     model_channels: 320  # for Seva.time_embed
+          #     out_channels: 4
+          #     num_frames: 8
+          #     num_res_blocks: 2
+          #     attention_resolutions: [4, 2, 1]
+          #     channel_mult: [1, 2, 4, 4]
+          #     num_head_channels: 64
+          #     transformer_depth: [1, 1, 1, 1]
+          #     context_dim: 1024
+          #     dense_in_channels: 6
+          #     dropout: 0.0
+          #     unflatten_names: ["middle_ds8", "output_ds4", "output_ds2"]
+          #     ckpt_path: null
         self_attn_rank: 4
         cross_attn_rank: 8
         alpha: 4.0

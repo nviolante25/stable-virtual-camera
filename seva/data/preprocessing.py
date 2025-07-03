@@ -13,6 +13,7 @@ from copy import deepcopy
 from glob import glob
 import pickle
 import torch
+from math import isclose
 
 def load_pickle(file_path):
     with open(file_path, 'rb') as f:
@@ -246,15 +247,15 @@ def get_mvhumannet_extrinsics(extrinsics_dict, scale):
     extrinsics[:3, 3] = extrinsics[:3, 3] * scale
     return extrinsics
 
-def update_intrinsics(K, crop_x=0, crop_y=0, scale=1, crop_first=True, padding_mode=False):
+def update_intrinsics(K, crop_x=0, crop_y=0, scale=1.0, crop_first=True, padding_mode=False):
     """Update intrinsic matrix for the crop and resizes."""
     K_new = K.copy() if type(K) == np.ndarray else K.clone()
     if crop_first:
         K_new = update_intrinsics_crop(K, crop_x, crop_y, padding_mode)
-        if scale != 1:
+        if not isclose(scale, 1):
             K_new = update_intrinsics_resize(K_new, scale)
     else:
-        if scale != 1:
+        if not isclose(scale, 1):
             K_new = update_intrinsics_resize(K, scale)
         K_new = update_intrinsics_crop(K_new, crop_x, crop_y, padding_mode)
     return K_new

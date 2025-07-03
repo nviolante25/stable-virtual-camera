@@ -167,7 +167,6 @@ def count_params(model, verbose=False):
 
 
 def instantiate_from_config(config):
-    print("\ninstantiate_from_config config:\n", config)
     if not "target" in config:
         if config == "__is_first_stage__":
             return None
