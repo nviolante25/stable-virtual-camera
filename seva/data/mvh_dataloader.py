@@ -321,6 +321,8 @@ BOTTOM_RUNG = [
 ]
 
 CAMERA_RUNGS = [TOP_RUNG, MIDDLE_RUNG, BOTTOM_RUNG]
+ALL_CAMERAS = sorted([cam for rung in CAMERA_RUNGS for cam in rung])
+CAMERA_TO_INDEX = {cam: idx for idx, cam in enumerate(ALL_CAMERAS)}
 
 # borrowed from @dataset.py
 def center_cameras(all_c2ws, c2ws):
@@ -487,7 +489,7 @@ class MVHumanNetDataset(Dataset):
         scene = self.scenes[idx]
         subject_id = scene['subject_id'] # ex. 100001
         timestep = scene['timestep'] # ex. 0005
-        frames_info = scene['frames_info'] # camera dict
+        frames_info = dict(sorted(scene['frames_info'].items())) # camera dict
         subject_path = os.path.join(self.root_dir, subject_id) 
 
         # get camera parameters
@@ -500,38 +502,28 @@ class MVHumanNetDataset(Dataset):
 
 
         # Sample frames indices
-        camera_order = []
-        sampled_image_paths = []
-        sampled_image_mask_paths = []
+        camera_order = [cam for cam in list(frames_info.keys())] # 48 sorted camera IDs
+        sampled_image_paths = [frames_info[cam]['image_path'] for cam in camera_order]
+        sampled_image_mask_paths = [frames_info[cam]['mask_path'] for cam in camera_order]
 
         # NOTE: if num_images>16, then trajectory NVS will default to using all in rung
         if np.random.rand() <= self.adjacent_frame_sampling_prob: # for trajectory NVS
+            print("trajectory NVS")
             # choose which rung of cameras to sample from (top/mid/bot)
             # this is only because these paths are the most apparently continuous
             which_rung = np.random.randint(0, len(CAMERA_RUNGS))
             rung_of_cameras = CAMERA_RUNGS[which_rung]
-            for cam in rung_of_cameras: # capture masked images in 16-camera rung
-                if cam in frames_info: # these should ALL EXIST
-                    camera_order.append(cam)
-                    sampled_image_paths.append(frames_info[cam]['image_path'])
-                    sampled_image_mask_paths.append(frames_info[cam]['mask_path'])
-
-            # NOTE: currenty only uses the rungs (path on the xy plane)
-            # TODO: possibly add support for more paths (zig-zag, up-and-down, snake, etc.)
-            start_idx = np.random.randint(0, len(sampled_image_paths)) # this should be 16
-            images_permutation = np.roll(np.arange(len(sampled_image_paths)), -start_idx)[:self.num_images]
+            start_idx = np.random.randint(0, len(rung_of_cameras)) # out of 16 cameras
+            images_permutation = np.roll(np.arange(len(rung_of_cameras)), -start_idx)[:self.num_images]
+            images_permutation = [CAMERA_TO_INDEX[rung_of_cameras[i]] for i in images_permutation]
         else: # for set NVS
-            # get all camera views
-            camera_order = [cam for cam in frames_info]
-            sampled_image_paths = [frames_info[cam]['image_path'] for cam in frames_info]
-            sampled_image_mask_paths = [frames_info[cam]['mask_path'] for cam in frames_info]
-            # then randomly sample
+            # sample random indices
+            print("set NVS")
             images_permutation = np.random.choice(len(sampled_image_paths), self.num_images, replace=False)
 
-        # re-order based on the permutation
+        camera_order = [camera_order[i] for i in images_permutation] # ordered subset of 'num_images' sampled cameras
         sampled_image_paths = [sampled_image_paths[i] for i in images_permutation]
         sampled_image_mask_paths = [sampled_image_mask_paths[i] for i in images_permutation]
-        camera_order = [camera_order[i] for i in images_permutation]
 
         # load latents
         if self.latents_dir is not None:
@@ -583,7 +575,7 @@ class MVHumanNetDataset(Dataset):
 
         # Read extrinsics (w2c -> c2w)
         all_c2ws = np.array([
-            get_c2w(cam) for cam in extrinsics.keys()
+            get_c2w(cam) for cam in frames_info.keys() # these keys are SORTED
         ])
 
         all_c2ws = torch.from_numpy(all_c2ws).float() # (total_cameras=48, 4, 4)
