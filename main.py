@@ -208,8 +208,7 @@ def get_parser(**parser_kwargs):
 def get_checkpoint_name(logdir):
     ckpt = os.path.join(logdir, "checkpoints", "last**.ckpt")
     ckpt = natsorted(glob.glob(ckpt))
-    print('available "last" checkpoints:')
-    print(ckpt)
+    
     if len(ckpt) > 1:
         print("got most recent checkpoint")
         ckpt = sorted(ckpt, key=lambda x: os.path.getmtime(x))[-1]
@@ -511,7 +510,6 @@ class ImageLogger(Callback):
         Returns:
             Tensor with colored border
         """
-        print("ImageLogger::add_colored_border:image_tensor.shape: ", image_tensor.shape)
         C, H, W = image_tensor.shape
         
         # Normalize border color from [0, 255] to [0, 1] range
@@ -558,10 +556,7 @@ class ImageLogger(Callback):
         batch_idx,
         pl_module: Union[None, pl.LightningModule] = None,
     ):
-        print("inside ImageLogger::log_local")
         root = os.path.join(save_dir, "images", split)
-        print("ImageLogger::log_local:rootdir to save images: ", root)
-        print("number of images: ", len(images))
         for k in images:
             if isheatmap(images[k]):
                 print("ImageLogger::log_local:in local log_local:heatmap:")
@@ -580,33 +575,20 @@ class ImageLogger(Callback):
                 plt.savefig(path)
                 plt.close()
                 # TODO: support wandb
-            else:
-                print("ImageLogger::log_local:in local log_local:not heatmap:")
-                print("images[k].shape: ", images[k].shape)
-                print("masks.shape: ", masks.shape)
-            
+            else:            
                 # SEVA multi-view tensors are already flattened in log_img to [N, C, H, W]
                 # Add colored borders based on image type
                 bordered_images = []
                 for i, img in enumerate(images[k]):
                     # Determine border color based on image key or index
-                    print("masks[i]: ", masks[i])
+                    
                     if masks[i]: # inputs
                         border_color = (247.0, 121.0, 132.0)  # red
                     else: # targets
                         border_color = (101.0, 174.0, 219.0)  # blue
 
-                    print("before img transformations")    
-                    print("img.shape: ", img.shape)
-                    print("img.min(): ", img.min())
-                    print("img.max(): ", img.max())
                     img = self.tensor_to_image(img) # (-1, 1) ->(0, 1)
-                    print("after img transformations")    
-                    print("img.shape: ", img.shape)
-                    print("img.min(): ", img.min())
-                    print("img.max(): ", img.max())
                     bordered_img = self.add_colored_border(img, border_color, border_width=24)
-                    print("[POST]bordered_img.shape: ", bordered_img.shape) 
                     bordered_images.append(bordered_img)
                 
                 # Stack bordered images and create grid
@@ -614,7 +596,6 @@ class ImageLogger(Callback):
                 # print("bordered_tensor.shape: ", bordered_tensor.shape)
                 # grid = torchvision.utils.make_grid(bordered_tensor, nrow=4, padding=24)
                 grid = torchvision.utils.make_grid(bordered_images, nrow=4, padding=24)
-                print("grid.shape: ", grid.shape)
                 
                 # if self.rescale:
                 #     grid = (grid + 1.0) / 2.0  # -1,1 -> 0,1; c,h,w
@@ -631,7 +612,6 @@ class ImageLogger(Callback):
                 img = Image.fromarray(grid)
                 img.save(path)
                 if exists(pl_module):
-                    print("ImageLogger::log_local:in local log_local:pl_module exists!")
                     assert isinstance(
                         pl_module.logger, WandbLogger
                     ), "logger_log_image only supports WandbLogger currently"
@@ -645,7 +625,6 @@ class ImageLogger(Callback):
 
     @rank_zero_only
     def log_img(self, pl_module, batch, batch_idx, split="train", sample=True): #pl_module: DiffusionEngine
-        print(f"ImageLogger::LOG_IMG inside function from {self.__class__.__name__}")
         check_idx = batch_idx if self.log_on_batch_idx else pl_module.global_step
 
         # check if we should log at this batch index
@@ -711,11 +690,6 @@ class ImageLogger(Callback):
                         samples = pl_module.sample(
                             c, shape=z.shape[1:], uc=uc, batch_size=N, **sampling_kwargs
                         )
-
-                print("finished sampling; shapes:")
-                print("x.shape: ", x.shape)
-                print("z.shape: ", z.shape)
-                print("samples.shape: ", samples.shape)
 
                 # async decoder + log to wandb stage -- move to CPU
                 z = z.to("cpu")
@@ -826,7 +800,6 @@ class ImageLogger(Callback):
 
     @rank_zero_only
     def on_test_batch_end(self, trainer, pl_module, outputs, batch, batch_idx, *args, **kwargs):
-        print("ImageLogger::on_test_batch_end")
         if not self.disabled:
             self.log_img(pl_module, batch, batch_idx, split="test")
 

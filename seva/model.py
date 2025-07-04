@@ -231,7 +231,6 @@ class Seva(nn.Module):
                 num_frames=num_frames,
             )
         h = h.type(x.dtype)
-        print("SEVA OUTPUT SHAPE: ", self.out(h).shape)
         return self.out(h) # [B*num_images, C=4, H=72, W=72]
 
 # for compatibility with SGM

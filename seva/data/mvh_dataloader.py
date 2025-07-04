@@ -508,7 +508,7 @@ class MVHumanNetDataset(Dataset):
 
         # NOTE: if num_images>16, then trajectory NVS will default to using all in rung
         if np.random.rand() <= self.adjacent_frame_sampling_prob: # for trajectory NVS
-            print("trajectory NVS")
+            # print("trajectory NVS")
             # choose which rung of cameras to sample from (top/mid/bot)
             # this is only because these paths are the most apparently continuous
             which_rung = np.random.randint(0, len(CAMERA_RUNGS))
@@ -518,7 +518,7 @@ class MVHumanNetDataset(Dataset):
             images_permutation = [CAMERA_TO_INDEX[rung_of_cameras[i]] for i in images_permutation]
         else: # for set NVS
             # sample random indices
-            print("set NVS")
+            # print("set NVS")
             images_permutation = np.random.choice(len(sampled_image_paths), self.num_images, replace=False)
 
         camera_order = [camera_order[i] for i in images_permutation] # ordered subset of 'num_images' sampled cameras
@@ -741,7 +741,6 @@ class MVHumanNetLoader(pl.LightningDataModule):
         self.transform = None # let corresponding Dataset handle this
 
     def setup(self, stage: Optional[str] = None):
-        print("MVHumanNetLoader::setup::stage: ", stage)
         if stage == "fit" or stage is None:
             self.train_dataset = MVHumanNetDataset(
                 root_dir=os.path.join(self.root_dir),
