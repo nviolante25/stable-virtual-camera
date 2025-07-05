@@ -163,7 +163,7 @@ lightning:
       params:
         disabled: False
         enable_autocast: False
-        batch_frequency: 3000
+        batch_frequency: 5000
         max_images: 8
         increase_log_steps: False # for debug, set True
         log_first_step: False
@@ -173,8 +173,8 @@ lightning:
           n_rows: 2
 
   trainer:
-    devices: 0,
-    benchmark: True
+    devices: 0,1
+    benchmark: False
     num_sanity_val_steps: 0
     accumulate_grad_batches: 1
     max_epochs: 1000

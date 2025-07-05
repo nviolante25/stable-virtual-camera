@@ -29,6 +29,7 @@ class SevaLoRAWrapper(nn.Module):
     ):
         super().__init__()
         self.seva_model = instantiate_from_config(seva_model_config)
+        self.seva_model.eval()
         self.self_attn_rank = self_attn_rank
         self.cross_attn_rank = cross_attn_rank
         self.alpha = alpha

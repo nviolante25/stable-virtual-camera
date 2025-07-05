@@ -151,7 +151,7 @@ lightning:
           n_rows: 2
 
   trainer:
-    devices: 0,1
+    devices: 0,1,2,3
     benchmark: True
     num_sanity_val_steps: 0
     accumulate_grad_batches: 1

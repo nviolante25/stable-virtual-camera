@@ -187,7 +187,7 @@ class Seva(nn.Module):
             for param in self.input_blocks.parameters():
                 param.requires_grad = False
             for param in self.middle_block.parameters():
-                param.requires_grad = True
+                param.requires_grad = False
             for param in self.output_blocks.parameters():
                 param.requires_grad = False
 
