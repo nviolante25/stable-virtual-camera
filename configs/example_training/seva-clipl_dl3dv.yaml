@@ -122,7 +122,7 @@ data:
     dataset_dir: /workspace/leovol/dl3dv-480P-new
     colmap_dir: /workspace/leovol/dl3dv-colmap-new
     latents_dir: /workspace/leovol/dl3dv-latents
-    batch_size: 1
+    batch_size: 2
     num_workers: 16
     num_images: 8
 
@@ -143,15 +143,15 @@ lightning:
         enable_autocast: False
         batch_frequency: 1000
         max_images: 8
-        increase_log_steps: True
+        increase_log_steps: False
         log_first_step: False
         log_images_kwargs:
           use_ema_scope: False
-          N: 8
+          N: 1
           n_rows: 2
 
   trainer:
-    devices: 0,
+    devices: 0,1
     benchmark: True
     num_sanity_val_steps: 0
     accumulate_grad_batches: 1
