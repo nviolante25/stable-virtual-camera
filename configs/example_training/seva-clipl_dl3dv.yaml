@@ -114,7 +114,7 @@ model:
         guider_config:
           target: sgm.modules.diffusionmodules.guiders.VanillaCFG
           params:
-            scale: 7.5
+            scale: 3.0
 
 data:
   target: sgm.data.dataset.DL3DVDataModuleFromConfig
@@ -151,8 +151,8 @@ lightning:
           n_rows: 2
 
   trainer:
-    devices: 0,
+    devices: 0,1
     benchmark: True
     num_sanity_val_steps: 0
     accumulate_grad_batches: 1
-    max_epochs: 3000
+    max_epochs: 2000
