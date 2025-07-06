@@ -106,7 +106,7 @@ model:
     sampler_config:
       target: sgm.modules.diffusionmodules.sampling.EulerEDMSampler
       params:
-        num_steps: 50
+        num_steps: 150
 
         discretization_config:
           target: sgm.modules.diffusionmodules.discretizer.LegacyDDPMDiscretization
@@ -141,7 +141,7 @@ lightning:
       params:
         disabled: False
         enable_autocast: False
-        batch_frequency: 500
+        batch_frequency: 100
         max_images: 8
         increase_log_steps: False
         log_first_step: False
