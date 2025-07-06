@@ -12,7 +12,7 @@ model:
       params:
         warm_up_steps: [10000]
         cycle_lengths: [10000000000000]
-        f_start: [1.e-6]
+        f_start: [1.e-2]
         f_max: [1.]
         f_min: [1.]
 
@@ -50,7 +50,7 @@ model:
           #     ckpt_path: null
         self_attn_rank: 4
         cross_attn_rank: 8
-        alpha: 4.0
+        alpha: 16.0
         dropout: 0.0
         target_modules: ["TransformerBlockTimeMix", "MultiviewTransformer", "TransformerBlock"]
         keys_to_lora: ["q", "k", "v"]
@@ -141,7 +141,7 @@ lightning:
       params:
         disabled: False
         enable_autocast: False
-        batch_frequency: 1000
+        batch_frequency: 500
         max_images: 8
         increase_log_steps: False
         log_first_step: False
@@ -151,7 +151,7 @@ lightning:
           n_rows: 2
 
   trainer:
-    devices: 0,1,2,3
+    devices: 0,
     benchmark: True
     num_sanity_val_steps: 0
     accumulate_grad_batches: 1
