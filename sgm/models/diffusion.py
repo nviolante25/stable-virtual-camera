@@ -86,6 +86,7 @@ class DiffusionEngine(pl.LightningModule):
             self.init_from_ckpt(ckpt_path)
 
         self.en_and_decode_n_samples_a_time = en_and_decode_n_samples_a_time
+        self.verbose_lora_deltas = verbose_lora_deltas
 
     def init_from_ckpt(
         self,
