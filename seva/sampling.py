@@ -311,12 +311,14 @@ class EulerEDMSampler(object):
         s_tmax=float("inf"),
         s_noise=1.0,
     ):
-        self.num_steps = num_steps
-        self.discretization = discretization
-        self.guider = guider
+        # from BaseDiffusionSampler
+        self.num_steps = num_steps  
+        self.discretization = discretization 
+        self.guider = guider 
         self.verbose = verbose
         self.device = device
 
+        # from EDMSampler
         self.s_churn = s_churn
         self.s_tmin = s_tmin
         self.s_tmax = s_tmax
@@ -344,7 +346,7 @@ class EulerEDMSampler(object):
             )
         return sigma_generator
 
-    def sampler_step(
+    def sampler_step( # EDMSampler doesn't have guider_kwargs, but is NEEDED!
         self,
         sigma: torch.Tensor,
         next_sigma: torch.Tensor,
@@ -356,13 +358,16 @@ class EulerEDMSampler(object):
         gamma: float = 0.0,
         **guider_kwargs,
     ) -> torch.Tensor:
-        sigma_hat = sigma * (gamma + 1.0) + 1e-6
+        sigma_hat = sigma * (gamma + 1.0) + 1e-6 # 1e-6 term not in EDMSampler
+        # gamma will be 0 anways, so omitted portion doesn't affect anything
 
         eps = torch.randn_like(x) * self.s_noise
         x = x + eps * append_dims(sigma_hat**2 - sigma**2, x.ndim) ** 0.5
 
+        # this is just BaseDiffusionSampler denoise func
         denoised = denoiser(*self.guider.prepare_inputs(x, sigma_hat, cond, uc))
         denoised = self.guider(denoised, sigma_hat, scale, **guider_kwargs)
+
         d = to_d(x, sigma_hat, denoised)
         dt = append_dims(next_sigma - sigma_hat, x.ndim)
         return x + dt * d

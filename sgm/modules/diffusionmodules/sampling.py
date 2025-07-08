@@ -209,6 +209,69 @@ class LinearMultistepSampler(BaseDiffusionSampler):
 
 
 class EulerEDMSampler(EDMSampler):
+    def sampler_step(
+        self,
+        sigma: torch.Tensor,
+        next_sigma: torch.Tensor,
+        denoiser,
+        x: torch.Tensor,
+        scale: float | torch.Tensor,
+        cond: dict,
+        uc: dict,
+        gamma: float = 0.0,
+        **guider_kwargs,
+    ) -> torch.Tensor:
+        sigma_hat = sigma * (gamma + 1.0) + 1e-6 # 1e-6 term not in EDMSampler
+        # gamma will be 0 anways, so omitted portion doesn't affect anything
+
+        eps = torch.randn_like(x) * self.s_noise
+        x = x + eps * append_dims(sigma_hat**2 - sigma**2, x.ndim) ** 0.5
+
+        # this is just BaseDiffusionSampler denoise func
+        denoised = denoiser(*self.guider.prepare_inputs(x, sigma_hat, cond, uc))
+        denoised = self.guider(denoised, sigma_hat, scale, **guider_kwargs)
+
+        d = to_d(x, sigma_hat, denoised)
+        dt = append_dims(next_sigma - sigma_hat, x.ndim)
+        return x + dt * d
+
+    def __call__( # from Seva
+        self,
+        denoiser,
+        x: torch.Tensor,
+        scale: float | torch.Tensor,
+        cond: dict,
+        uc: dict | None = None,
+        num_steps: int | None = None,
+        verbose: bool = True,
+        **guider_kwargs,
+    ) -> torch.Tensor:
+        uc = cond if uc is None else uc
+        x, s_in, sigmas, num_sigmas, cond, uc = self.prepare_sampling_loop(
+            x,
+            cond,
+            uc,
+            num_steps,
+        )
+        for i in self.get_sigma_gen(num_sigmas, verbose=verbose):
+            gamma = (
+                min(self.s_churn / (num_sigmas - 1), 2**0.5 - 1)
+                if self.s_tmin <= sigmas[i] <= self.s_tmax
+                else 0.0
+            )
+            x = self.sampler_step(
+                s_in * sigmas[i],
+                s_in * sigmas[i + 1],
+                denoiser,
+                x,
+                scale,
+                cond,
+                uc,
+                gamma,
+                **guider_kwargs, # only difference
+            )
+        return x
+
     def possible_correction_step(
         self, euler_step, x, d, dt, next_sigma, denoiser, cond, uc
     ):

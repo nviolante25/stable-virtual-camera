@@ -71,3 +71,15 @@ class SevaWrapper(IdentityWrapper):
         )
         out = rearrange(out, "(b f) c h w -> b f c h w", f=f)
         return out
+
+# more based on SGMWrapper without needing to reshape
+class SevaWrapperV2(IdentityWrapper):
+    def forward(
+        self, x: torch.Tensor, t: torch.Tensor, c: dict, **kwargs
+    ) -> torch.Tensor:
+        x = torch.cat((x, c.get("concat", torch.Tensor([]).type_as(x))), dim=1)
+        dense_y = c["dense_vector"]
+        y = c["crossattn"]
+        return self.diffusion_model(
+            x, t, y, dense_y=dense_y, **kwargs
+        )

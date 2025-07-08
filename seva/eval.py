@@ -1462,6 +1462,8 @@ def run_one_scene(
     test_c2ws = camera_cond["c2w"][test_indices]
     test_Ks = camera_cond["K"][test_indices]
 
+    # these are given from the dataloader
+
     if options.get("save_input", True):
         save_output(
             {"/image": input_imgs},

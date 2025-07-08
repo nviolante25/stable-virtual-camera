@@ -1118,7 +1118,7 @@ class SevaFrozenOpenCLIPImageEmbedder(AbstractEmbModel):
     def forward(self, image, mask, no_dropout=False):
         batch_size = image.shape[0]
         z = [self.encode_with_vision_transformer(image[b][mask[b]]).mean(0, keepdim=True) 
-             for b in range(batch_size)]
+             for b in range(batch_size)] # will end up (num_images, 1024)
         z = torch.cat(z, dim=0)
         z = z.to(image.dtype)
         if self.ucg_rate > 0.0 and not no_dropout:

@@ -67,3 +67,41 @@ class LegacyDDPMDiscretization(Discretization):
         to_torch = partial(torch.tensor, dtype=torch.float32, device=device)
         sigmas = to_torch((1 - alphas_cumprod) / alphas_cumprod) ** 0.5
         return torch.flip(sigmas, (0,))
+
+
+class SevaDDPMDiscretization(Discretization):
+    def __init__(
+        self,
+        linear_start: float = 5e-06,
+        linear_end: float = 0.012,
+        num_timesteps: int = 1000,
+        log_snr_shift: float | None = 2.4,
+    ):
+        self.num_timesteps = num_timesteps
+
+        betas = make_beta_schedule(
+            "linear",
+            num_timesteps,
+            linear_start=linear_start,
+            linear_end=linear_end,
+        )
+        self.log_snr_shift = log_snr_shift
+        alphas = 1.0 - betas  # first alpha here is on data side
+        self.alphas_cumprod = np.cumprod(alphas, axis=0)
+        self.to_torch = partial(torch.tensor, dtype=torch.float32)
+
+    def get_sigmas(self, n: int, device: str | torch.device = "cpu") -> torch.Tensor:
+        if n < self.num_timesteps:
+            timesteps = generate_roughly_equally_spaced_steps(n, self.num_timesteps)
+            alphas_cumprod = self.alphas_cumprod[timesteps]
+        elif n == self.num_timesteps:
+            alphas_cumprod = self.alphas_cumprod
+        else:
+            raise ValueError(f"Expected n <= {self.num_timesteps}, but got n = {n}.")
+
+        sigmas = ((1 - alphas_cumprod) / alphas_cumprod) ** 0.5
+        if self.log_snr_shift is not None:
+            sigmas = sigmas * np.exp(self.log_snr_shift)
+        return torch.flip(
+            torch.tensor(sigmas, dtype=torch.float32, device=device), (0,)
+        )

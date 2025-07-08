@@ -42,6 +42,119 @@ class VanillaCFG(Guider):
         return torch.cat([x] * 2), torch.cat([s] * 2), c_out
 
 
+# from seva.sampling
+class ConstantScaleRule(object):
+    def __call__(self, scale: float | torch.Tensor) -> float | torch.Tensor:
+        return scale
+
+class MultiviewScaleRule(object):
+    def __init__(self, min_scale: float = 1.0):
+        self.min_scale = min_scale
+
+    def __call__(
+        self,
+        scale: float | torch.Tensor,
+        c2w: torch.Tensor,
+        K: torch.Tensor,
+        input_frame_mask: torch.Tensor,
+    ) -> torch.Tensor:
+        c2w_input = c2w[input_frame_mask]
+        rotation_diff = get_camera_dist(c2w, c2w_input, mode="rotation").min(-1).values
+        translation_diff = (
+            get_camera_dist(c2w, c2w_input, mode="translation").min(-1).values
+        )
+        K_diff = (
+            ((K[:, None] - K[input_frame_mask][None]).flatten(-2) == 0).all(-1).any(-1)
+        )
+        close_frame = (rotation_diff < 10.0) & (translation_diff < 1e-5) & K_diff
+        if isinstance(scale, torch.Tensor):
+            scale = scale.clone()
+            scale[close_frame] = self.min_scale
+        elif isinstance(scale, float):
+            scale = torch.where(close_frame, self.min_scale, scale)
+        else:
+            raise ValueError(f"Invalid scale type {type(scale)}.")
+        return scale
+
+
+class ConstantScaleSchedule(object):
+    def __call__(
+        self, sigma: float | torch.Tensor, scale: float | torch.Tensor
+    ) -> float | torch.Tensor:
+        if isinstance(sigma, float):
+            return scale
+        elif isinstance(sigma, torch.Tensor):
+            if len(sigma.shape) == 1 and isinstance(scale, torch.Tensor):
+                sigma = append_dims(sigma, scale.ndim)
+            return scale * torch.ones_like(sigma)
+        else:
+            raise ValueError(f"Invalid sigma type {type(sigma)}.")
+
+
+class ConstantGuidance(object):
+    def __call__(
+        self,
+        uncond: torch.Tensor,
+        cond: torch.Tensor,
+        scale: float | torch.Tensor,
+    ) -> torch.Tensor:
+        if isinstance(scale, torch.Tensor) and len(scale.shape) == 1:
+            scale = append_dims(scale, cond.ndim)
+        return uncond + scale * (cond - uncond)
+
+
+class SevaVanillaCFG(Guider):
+    def __init__(self):
+        self.scale_rule = ConstantScaleRule()
+        self.scale_schedule = ConstantScaleSchedule()
+        self.guidance = ConstantGuidance()
+
+    def __call__(
+        self, x: torch.Tensor, sigma: float | torch.Tensor, scale: float | torch.Tensor
+    ) -> torch.Tensor:
+        x_u, x_c = x.chunk(2)
+        scale = self.scale_rule(scale)
+        scale_value = self.scale_schedule(sigma, scale)
+        x_pred = self.guidance(x_u, x_c, scale_value)
+        return x_pred
+
+    def prepare_inputs(
+        self, x: torch.Tensor, s: torch.Tensor, c: dict, uc: dict
+    ) -> tuple[torch.Tensor, torch.Tensor, dict]:
+        c_out = dict()
+
+        for k in c:
+            if k in ["vector", "crossattn", "concat", "replace", "dense_vector"]:
+                c_out[k] = torch.cat((uc[k], c[k]), 0)
+            else:
+                assert c[k] == uc[k]
+                c_out[k] = c[k]
+        return torch.cat([x] * 2), torch.cat([s] * 2), c_out
+
+
+class SevaMultiviewCFG(SevaVanillaCFG):
+    def __init__(self, cfg_min: float = 1.0):
+        self.scale_min = cfg_min
+        self.scale_rule = MultiviewScaleRule(min_scale=cfg_min)
+        self.scale_schedule = ConstantScaleSchedule()
+        self.guidance = ConstantGuidance()
+
+    def __call__(  # type: ignore
+        self,
+        x: torch.Tensor,
+        sigma: float | torch.Tensor,
+        scale: float | torch.Tensor,
+        c2w: torch.Tensor,
+        K: torch.Tensor,
+        input_frame_mask: torch.Tensor,
+    ) -> torch.Tensor:
+        x_u, x_c = x.chunk(2)
+        scale = self.scale_rule(scale, c2w, K, input_frame_mask)
+        scale_value = self.scale_schedule(sigma, scale)
+        x_pred = self.guidance(x_u, x_c, scale_value)
+        return x_pred
+
+
 class IdentityGuider(Guider):
     def __call__(self, x: torch.Tensor, sigma: float) -> torch.Tensor:
         return x

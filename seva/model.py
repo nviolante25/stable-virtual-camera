@@ -242,7 +242,10 @@ class SGMWrapper(nn.Module):
     def forward(
         self, x: torch.Tensor, t: torch.Tensor, c: dict, **kwargs
     ) -> torch.Tensor:
+        # c: crossattn, concat, dense_vector
+        # kwargs 'num_frames'
         x = torch.cat((x, c.get("concat", torch.Tensor([]).type_as(x))), dim=1)
+        # 16,11,72,72 (concat is 7, latent x is 4)
         return self.module(
             x,
             t=t,
@@ -250,7 +253,6 @@ class SGMWrapper(nn.Module):
             dense_y=c["dense_vector"],
             **kwargs,
         )
-
 
 # class SevaLightningModule(pl.LightningModule):
 #     def __init__(self, seva_model: Seva):
