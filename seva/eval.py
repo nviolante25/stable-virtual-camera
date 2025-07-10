@@ -1150,13 +1150,13 @@ def create_samplers(
 
 
 def get_value_dict(
-    curr_imgs,
+    curr_imgs, # (T,3,H,W)
     curr_imgs_clip,
     curr_input_frame_indices,
-    curr_c2ws,
-    curr_Ks,
-    curr_input_camera_indices,
-    all_c2ws,
+    curr_c2ws, # (T,3,4)
+    curr_Ks, # (T,3,3)
+    curr_input_camera_indices, # (T,)
+    all_c2ws, # (num_images,3,4)
     camera_scale,
 ):
     assert sorted(curr_input_camera_indices) == sorted(
@@ -1183,7 +1183,7 @@ def get_value_dict(
     valid_mask = camera_dist_2med <= torch.clamp(
         torch.quantile(camera_dist_2med, 0.97) * 10,
         max=1e6,
-    )
+    ) # i think this is to prevent huge outliers?
     c2w[:, :3, 3] -= ref_c2ws[valid_mask, :3, 3].mean(0, keepdim=True)
     w2c = torch.linalg.inv(c2w)
 
