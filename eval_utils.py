@@ -60,12 +60,18 @@ from seva.model import SGMWrapper
 def eval_report(samples, frames, input_masks, T, reference=None):
     # Reference can be concatenated to the right
     # such as adding the generation via the demo itself
-    mean_psnr = 0.0
-    mean_ssim = 0.0
-    mean_lpips = 0.0
+    means = {}
+    means["psnr"] = 0.0
+    means["ssim"] = 0.0
+    means["lpips"] = 0.0
+    if reference is not None:
+        means["ref_psnr"] = 0.0
+        means["ref_ssim"] = 0.0
+        means["ref_lpips"] = 0.0
     num_target_frames = 0
     visual_images = []
     input_images = []
+    grid = None  # Initialize grid to None
 
     ref_cnt = 0 # need separate counter (reference images should be targets ONLY)
     for i in range(T):
@@ -97,13 +103,18 @@ def eval_report(samples, frames, input_masks, T, reference=None):
             print(f"image {i}: \t [PSNR↑] {curr_pnsr:.3f}, \t [SSIM↑] {curr_ssim:.3f}, \t[LPIPS↓] {curr_lpips:.3f}")
             if reference is not None:
                 print(f"ref_img: \t [PSNR↑] {compute_psnr(frames[i:i+1], reference[ref_cnt-1:ref_cnt]):.3f}, \t [SSIM↑] {compute_ssim(frames[i:i+1], reference[ref_cnt-1:ref_cnt]):.3f}, \t[LPIPS↓] {compute_lpips(frames[i:i+1], reference[ref_cnt-1:ref_cnt], normalized=True):.3f}")
-            mean_psnr += curr_pnsr
-            mean_ssim += curr_ssim
-            mean_lpips += curr_lpips
+                means["ref_psnr"] += compute_psnr(frames[i:i+1], reference[ref_cnt-1:ref_cnt])
+                means["ref_ssim"] += compute_ssim(frames[i:i+1], reference[ref_cnt-1:ref_cnt])
+                means["ref_lpips"] += compute_lpips(frames[i:i+1], reference[ref_cnt-1:ref_cnt], normalized=True)
+            means["psnr"] += curr_pnsr
+            means["ssim"] += curr_ssim
+            means["lpips"] += curr_lpips
         else:
             input_images.append(frames[i])
 
-    print(f"mean PSNR: {mean_psnr / num_target_frames:.3f}, mean SSIM: {mean_ssim / num_target_frames:.3f}, mean LPIPS: {mean_lpips / num_target_frames:.3f}")
+    print(f"mean PSNR: {means['psnr'] / num_target_frames:.3f}, mean SSIM: {means['ssim'] / num_target_frames:.3f}, mean LPIPS: {means['lpips'] / num_target_frames:.3f}")
+    if reference is not None:
+        print(f"mean ref PSNR: {means['ref_psnr'] / ref_cnt:.3f}, mean ref SSIM: {means['ref_ssim'] / ref_cnt:.3f}, mean ref LPIPS: {means['ref_lpips'] / ref_cnt:.3f}")
 
     if input_images:
         input_grid = torchvision.utils.make_grid(
@@ -140,8 +151,9 @@ def eval_report(samples, frames, input_masks, T, reference=None):
         plt.figure(figsize=(40, 40))  # Set figure size to make it larger
         plt.imshow(grid)
         plt.axis('off')  # Remove axes for cleaner display
-        # plt.imsave("visual_tensor.png", grid)
         plt.show()
+
+    return means, grid
 
     # save samples to:
     # output_dir = "output_samples"
@@ -381,7 +393,7 @@ def append_dims(x: torch.Tensor, target_dims: int) -> torch.Tensor:
         )
     return x[(...,) + (None,) * dims_to_append]
 
-def tensor_to_image(t: torch.Tensor) -> torch.Tensor:
+def normalize_tensor(t: torch.Tensor) -> torch.Tensor:
     # Convert [-1, 1] to [0, 1] for display
     t = (t + 1.0) / 2.0
     return t.clamp(0, 1)
@@ -475,7 +487,7 @@ def compute_lpips(pred, target, normalized=False):
     if normalized: # [0, 1] -> [-1, 1]
         pred = 2.0 * pred - 1.0
         target = 2.0 * target - 1.0
-    return loss_fn(pred, target).mean()
+    return loss_fn(pred, target).mean().detach()
 
 from einops import repeat
 
@@ -741,6 +753,27 @@ def load_from_transforms_json_and_split(
     }
 
     return batch
+
+
+def save_tensor_dict(tensor_dict, file_path):
+    """
+    Save a dictionary of tensors to a file using torch.
+    Args:
+        tensor_dict (dict): Dictionary where values are torch.Tensor.
+        file_path (str): Path to save the file (should end with .pt or .pth).
+    """
+    torch.save(tensor_dict, file_path)
+
+def save_image(array, file_path):
+    """
+    Save image to a file.
+    Args:
+        image (ndarray): Image numpy array.
+        file_path (str): Path to save the file (should end with .png).
+    """
+    im = Image.fromarray((array*255).astype(np.uint8))
+    im.save(file_path)
+
 
 def init_seva(vanilla: bool=True):
     # * BELOW: faithful Seva process
