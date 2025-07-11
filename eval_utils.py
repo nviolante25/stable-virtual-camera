@@ -7,33 +7,27 @@ import torchvision
 import matplotlib.pyplot as plt
 import lpips
 import numpy as np
-
 import os
-import torch
 import torchvision.transforms as transforms
 from PIL import Image
 import glob
-from seva.eval import transform_img_and_K
+from seva.eval import transform_img_and_K, create_transforms_simple
 from sgm.data.utils_camera import read_extrinsics_nerfstudio, read_intrinsics_nerfstudio
 from sgm.data.dataset import center_cameras, scale_cameras
 from seva.geometry import get_plucker_coordinates
 from einops import repeat
 import json
-import torchvision.transforms as transforms
-import os
-from PIL import Image
-import numpy as np
+import shutil
 
 from seva.modules.lora_wrapper import SevaLoRAWrapper
 from seva.modules.conditioner import CLIPConditioner
 from sgm.models.diffusion import DiffusionEngine
-from sgm.modules.encoders.modules import GeneralConditioner
+from sgm.modules.encoders.modules import GeneralConditioner, IdentityEncoder, SevaFrozenOpenCLIPImageEmbedder
 from sgm.modules.diffusionmodules.denoiser import DiscreteDenoiser
 from sgm.modules.diffusionmodules.sampling import EulerEDMSampler
 from sgm.modules.diffusionmodules.discretizer import LegacyDDPMDiscretization
 from sgm.modules.diffusionmodules.denoiser_scaling import EpsScaling
 from sgm.modules.diffusionmodules.guiders import VanillaCFG
-from sgm.modules.encoders.modules import IdentityEncoder, SevaFrozenOpenCLIPImageEmbedder
 from sgm.models.autoencoder import IdentityFirstStage
 from seva.model import SGMWrapper
 from sgm.util import instantiate_from_config
@@ -43,9 +37,9 @@ from sgm.modules.diffusionmodules.wrappers import SevaWrapper, SevaWrapperV2
 import yaml
 from omegaconf import OmegaConf
 from seva.sampling import EulerEDMSampler, DDPMDiscretization, MultiviewCFG, DiscreteDenoiser
-from sgm.models.autoencoder import IdentityFirstStage
-from sgm.modules.encoders.modules import IdentityEncoder, SevaFrozenOpenCLIPImageEmbedder, GeneralConditioner
-from seva.model import SGMWrapper
+
+from seva.data_io import COLMAPParser
+import pycolmap
 
 # EVAL
 
@@ -642,10 +636,10 @@ def load_from_transforms_json_and_split(
     all_Ks = []
 
     if all_keys_in_dict(transforms_dict, ["w", "h", "fl_x", "fl_y", "cx", "cy"]):
-        all_Ks = read_intrinsics_nerfstudio(
+        all_Ks = torch.from_numpy(read_intrinsics_nerfstudio(
             transforms_dict=transforms_dict,
             normalize=False
-        )
+        ))
         all_Ks = repeat(torch.tensor(all_Ks), "h w -> n h w", n=len(transforms_dict["frames"]))
 
     for i, frame in enumerate(transforms_dict["frames"]):
@@ -667,19 +661,21 @@ def load_from_transforms_json_and_split(
 
     input_mask = np.array(input_mask)
     images_idx = np.where(input_mask != 0)[0] # get our "T" images
+    mapping = {idx: i for i, idx in enumerate(images_idx)} # map from value to index
     input_frames_indices = np.where(input_mask == 1)[0]
+    input_frames_indices = [mapping[idx] for idx in input_frames_indices]
     input_frames_mask = torch.zeros(len(images_idx), dtype=torch.bool)
     input_frames_mask[input_frames_indices] = True # inputs are 1, targets 0
     Ks = torch.tensor(all_Ks)[images_idx]
 
     num_images = len(images_idx)
 
-    frames = torch.zeros((num_images, 3, 576, 576))
+    frames = torch.zeros((num_images, 3, target_shape[0], target_shape[1]))
     for i, (img_file, K) in enumerate(zip(image_files, Ks)):
         img_path = os.path.join(transforms_json_path, img_file)
         image = Image.open(img_path).convert("RGB")
         image = transforms.ToTensor()(image) # may need to scale K here
-        image, K = transform_img_and_K(image.unsqueeze(0), size=(576, 576), K=K[None]) # images converted to square, [-1, 1] normalization
+        image, K = transform_img_and_K(image.unsqueeze(0), size=(target_shape[0], target_shape[1]), K=K[None]) # images converted to square, [-1, 1] normalization
         W, H = image.shape[-2:]
         # print("W, H:", W, H) 
         K[:, 0] /= W
@@ -751,6 +747,130 @@ def load_from_transforms_json_and_split(
         "c2ws": c2ws,
         "Ks": Ks,
     }
+
+    return batch
+
+
+def colmap_to_transforms_json(colmap_dir, output_dir, images_dir=None, image_folder="images", colmap_folder="sparse/0", normalize=False, downsample=1):
+    """
+    Convert COLMAP directory structure to transforms.json format.
+    Resulting directory is written to output_dir.
+    
+    Args:
+        colmap_dir: Path to the COLMAP directory containing images/ and sparse/0/
+        output_dir: Directory to save the transforms.json file
+        image_folder: Name of the folder containing images (default: "images")
+        colmap_folder: Name of the COLMAP sparse folder (default: "sparse/0")
+        normalize: Whether to normalize camera poses (default: False)
+    """
+
+    os.makedirs(output_dir, exist_ok=True)
+    # copy over colmap "sparse/0" to output
+    shutil.copytree(
+        os.path.join(colmap_dir, colmap_folder),
+        os.path.join(output_dir, colmap_folder),
+        dirs_exist_ok=True
+    )
+
+    # create directory with copied images for COLMAPParser
+    if not os.path.exists(os.path.join(colmap_dir, image_folder)):
+        # then need to copy it over from images_dir if provided
+        if images_dir is None:
+            raise ValueError("images_dir must be provided if image_folder does not exist in colmap_dir")
+        if not os.path.exists(images_dir):
+            raise FileNotFoundError(f"images_dir {images_dir} does not exist")
+        
+        # copy over images
+        shutil.copytree(
+            os.path.join(images_dir),
+            os.path.join(output_dir, image_folder),
+            dirs_exist_ok=True
+        )
+
+    # Parse COLMAP data
+    parser = COLMAPParser(
+        data_dir=output_dir,
+        factor=1,  # No downsampling
+        normalize=normalize,
+        test_every=8,
+        image_folder=image_folder,
+        colmap_folder=colmap_folder
+    ) # ! - returns OpenCV/COLMAP c2ws (need to convert to OpenGL for transforms.json)
+
+    # convert OpenCV/COLMAP -> openGL
+    parser.camtoworlds = parser.camtoworlds @ np.array(np.diag([1.0, -1.0, -1.0, 1.0]))
+    
+    # Create output directory
+    processed_K_set = set()
+    img_whs = []
+    for cam_id in parser.camera_ids:
+        w_, h_ = parser.imsize_dict[cam_id]
+        if cam_id not in processed_K_set:
+            K = parser.Ks_dict[cam_id]
+            K[0] /= downsample
+            K[1] /= downsample
+            parser.Ks_dict[cam_id] = K
+            processed_K_set.add(cam_id)
+        img_whs.append(torch.tensor([w_ // downsample, h_ // downsample]).detach())
+
+    # Convert to transforms.json format
+    create_transforms_simple(
+        save_path=output_dir,
+        img_paths=parser.image_paths,
+        img_whs=img_whs,
+        c2ws=parser.camtoworlds,
+        Ks=[torch.tensor(parser.Ks_dict[cam_id]).detach() for cam_id in parser.camera_ids]
+    )
+
+    # remove copied sparse/0 folder
+    shutil.rmtree(os.path.join(output_dir, colmap_folder))
+    os.removedirs(os.path.join(output_dir, colmap_folder.split("/")[0]))
+
+    print(f"Created transforms.json in {output_dir}")
+    print(f"Processed {len(parser.image_paths)} images from {len(set(parser.camera_ids))} cameras")
+
+
+def create_batch_manually(
+    colmap_dir, 
+    output_dir, 
+    images_dir, 
+    image_folder, 
+    train_ids,
+    test_ids,
+    autoencoder,
+    scale_factor=0.18215,
+    target_shape=(576, 576),
+    downsample=1,
+    normalize=False,
+    num_train_images=100,
+    num_test_images=100,
+):
+    # first, prepare the colmap directory (with images and transforms.json)
+    # this gets it to Seva expected format
+    colmap_to_transforms_json(
+        colmap_dir=colmap_dir,
+        output_dir=output_dir,
+        images_dir=images_dir,
+        image_folder=image_folder,
+        downsample=downsample
+    )
+
+    # then, we need to create a train_test_split_<num_train_images>.json file
+    with open(os.path.join(output_dir, f"train_test_split_{len(train_ids)}.json"), "w") as f:
+        json.dump({
+            "train_ids": train_ids,
+            "test_ids": test_ids
+        }, f)
+
+    # then, create the batch
+    batch = load_from_transforms_json_and_split(
+        transforms_json_path=output_dir,
+        num_train_images=len(train_ids),
+        autoencoder=autoencoder,
+        scale_factor=scale_factor,
+        target_shape=target_shape,
+        downsample_factor=downsample
+    )
 
     return batch
 
@@ -887,3 +1007,5 @@ def init_seva(vanilla: bool=True):
 # masks = batch["mask"].reshape(-1)
 # show_tensor_batch(rgb_outputs, masks=masks)
 # show_tensor_batch(gt_images, frames=batch["frames"].view(-1, *batch["frames"].shape[2:]), masks=masks)
+
+
