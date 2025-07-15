@@ -336,7 +336,8 @@ class DiffusionEngine(pl.LightningModule):
         denoiser = lambda input, sigma, c: self.denoiser(
             self.model, input, sigma, c, **kwargs
         )
-        samples = self.sampler(denoiser, randn, cond, uc=uc)
+        log_guider = kwargs.get("log_guider", None)
+        samples = self.sampler(denoiser, randn, cond, uc=uc, log_guider=log_guider)
         return samples
 
     @torch.no_grad()

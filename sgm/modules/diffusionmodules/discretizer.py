@@ -69,7 +69,7 @@ class LegacyDDPMDiscretization(Discretization):
         return torch.flip(sigmas, (0,))
 
 
-class SevaDDPMDiscretization(Discretization):
+class SevaDDPMDiscretization(LegacyDDPMDiscretization):
     def __init__(
         self,
         linear_start: float = 5e-06,
@@ -77,18 +77,8 @@ class SevaDDPMDiscretization(Discretization):
         num_timesteps: int = 1000,
         log_snr_shift: float | None = 2.4,
     ):
-        self.num_timesteps = num_timesteps
-
-        betas = make_beta_schedule(
-            "linear",
-            num_timesteps,
-            linear_start=linear_start,
-            linear_end=linear_end,
-        )
+        super().__init__(linear_start, linear_end, num_timesteps)
         self.log_snr_shift = log_snr_shift
-        alphas = 1.0 - betas  # first alpha here is on data side
-        self.alphas_cumprod = np.cumprod(alphas, axis=0)
-        self.to_torch = partial(torch.tensor, dtype=torch.float32)
 
     def get_sigmas(self, n: int, device: str | torch.device = "cpu") -> torch.Tensor:
         if n < self.num_timesteps:

@@ -11,6 +11,7 @@ import torch
 import cv2 as cv
 import numpy as np
 
+from seva.eval import transform_img_and_K
 
 from seva.geometry import get_plucker_coordinates
 from seva.modules.autoencoder import AutoEncoder
@@ -108,6 +109,7 @@ class StableDataModuleFromConfig(LightningDataModule):
 
 
 def center_cameras(all_c2ws, c2ws):
+    # this differs from original seva implementation somehow.
     # finds mean position of all_c2ws, then centers cameras by subtracting the mean
     ref_c2ws = all_c2ws
     camera_dist_2med = torch.norm(
@@ -132,7 +134,7 @@ def scale_cameras(c2ws, camera_scale=2.0):
         ).any()
         else (camera_scale / torch.norm(camera_dists[0]))
     )
-    c2ws[:, :3, 3] *= translation_scaling_factor
+    c2ws[:, :3, 3] *= translation_scaling_factor # .5272 in chair5
 
 
 # def worker_init_fn(worker_id):
@@ -151,15 +153,12 @@ class DL3DVDataset(Dataset):
         self.num_images = num_images
         self.scenes = self._load_scenes()
         self.adjacent_frame_sampling_prob = 0.2
+        # ! - for debug:
+        self.current_scene = None
 
-        print("=" * 30)
-        print("\n \n")
         print("\n dataset_dir:\n", dataset_dir)
         print("\n colmap_dir:\n", colmap_dir)
-        print("\n levels:\n", levels)
-        print("\n num_images:\n", num_images)
-        print("\n \n")
-        print("=" * 30)
+        print("\n latents_dir:\n", latents_dir)
         
         if "480P" in dataset_dir:
             self.image_shape = (270, 480)
@@ -201,6 +200,7 @@ class DL3DVDataset(Dataset):
 
     def __getitem__(self, idx):
         scene_path = self.scenes[idx]
+        self.current_scene = scene_path
 
         # Load colmap data
         colmap_scene_path = os.path.join(
@@ -240,23 +240,6 @@ class DL3DVDataset(Dataset):
 
         # print("clean_latents(shape): ", clean_latents.shape)
 
-        # Load frames from image paths
-        # (T,3,H,W)
-        frames = torch.zeros((self.num_images, 3, self.target_shape[0],  self.target_shape[1]))
-        for i, img_file in enumerate(images_files):
-            img_path = os.path.join(images_dir, img_file)
-            image = Image.open(img_path).convert("RGB")
-            image = self.transform(image) # images converted to square, [-1, 1] normalization
-            frames[i] = image
-
-        # Read extrinsics from COLMAP
-        # takes in tvec and qvec to return homogeneous c2w matrix
-        all_c2ws = np.array([read_extrinsics_colmap(image_meta, mode="c2w") for image_meta in images_metas])
-        all_c2ws = torch.from_numpy(all_c2ws).float()
-        c2ws = all_c2ws[images_idxs] # choose sampled ones only
-        center_cameras(all_c2ws, c2ws) # mean center
-        scale_cameras(c2ws)
-        
         # Read intrinsics from COLMAP
         # key of camera: 1
         intrinsics = read_intrinsics_colmap(cameras_metas[1], normalize=True)
@@ -264,6 +247,32 @@ class DL3DVDataset(Dataset):
         # TODO: accept multiple camera intrinsics
         Ks = repeat(intrinsics, 'd1 d2 -> n d1 d2', n=self.num_images)
         Ks = torch.from_numpy(Ks).float()
+
+        # Read extrinsics from COLMAP
+        # takes in tvec and qvec to return homogeneous c2w matrix
+        all_c2ws = np.array([read_extrinsics_colmap(image_meta, mode="c2w") for image_meta in images_metas])
+        all_c2ws = torch.from_numpy(all_c2ws).float()
+        c2ws = all_c2ws[images_idxs].clone() # this centers from ALL c2ws in the scene
+        center_cameras(all_c2ws, c2ws) # mean center
+        scale_cameras(c2ws)
+        
+        # Load frames from image paths
+        # (T,3,H,W)
+        frames = torch.zeros((self.num_images, 3, self.target_shape[0],  self.target_shape[1]))
+        for i, img_file in enumerate(images_files):
+            img_path = os.path.join(images_dir, img_file)
+            image = Image.open(img_path).convert("RGB")
+            image_tensor = transforms.ToTensor()(image)
+            image, Ks[i] = transform_img_and_K(
+                image_tensor.unsqueeze(0), 
+                size=self.target_shape,
+                K=Ks[i].unsqueeze(0))
+            W, H = image.shape[-2:]
+            Ks[i, 0, :] /= W
+            Ks[i, 1, :] /= H
+            image = transforms.Normalize([0.5], [0.5])(image)
+            # image = self.transform(image) # images converted to square, [-1, 1] normalization
+            frames[i] = image
 
         # Sample input and target frames
         num_input_frames = np.random.randint(1, self.num_images)  # Randomly select number of input frames

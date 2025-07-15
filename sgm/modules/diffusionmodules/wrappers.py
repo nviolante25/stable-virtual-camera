@@ -49,13 +49,15 @@ class SevaWrapper(IdentityWrapper):
     def forward(
         self, x: torch.Tensor, t: torch.Tensor, c: dict, **kwargs
     ) -> torch.Tensor:
-        x = torch.cat((x, c.get("concat", torch.Tensor([]).type_as(x))), dim=2)
-
 
         b = x.shape[0]
         f = x.shape[1]
         x = rearrange(x, "b f c h w -> (b f) c h w")
         dense_y=rearrange(c["plucker"], "b f c h w -> (b f) c h w")
+        concat = c.get("concat", torch.Tensor([]).type_as(x))
+        if concat.ndim > 1:
+            concat = repeat(concat, "b f c h w -> (b f) c h w", f=f)
+        x = torch.cat((x, concat), dim=1)
 
         t = repeat(t, "b -> (b f)", f=f)
         y = repeat(c["crossattn"], "b 1 c -> (b f) 1 c", f=f)
@@ -72,11 +74,12 @@ class SevaWrapper(IdentityWrapper):
         out = rearrange(out, "(b f) c h w -> b f c h w", f=f)
         return out
 
-# more based on SGMWrapper without needing to reshape
+# essentially SGMWrapper
 class SevaWrapperV2(IdentityWrapper):
     def forward(
         self, x: torch.Tensor, t: torch.Tensor, c: dict, **kwargs
     ) -> torch.Tensor:
+        print(f"SevaWrapperV2: {x.shape}, {t.shape}, {c.keys()}")
         x = torch.cat((x, c.get("concat", torch.Tensor([]).type_as(x))), dim=1)
         dense_y = c["dense_vector"]
         y = c["crossattn"]

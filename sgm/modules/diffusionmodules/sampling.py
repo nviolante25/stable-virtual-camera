@@ -219,6 +219,7 @@ class EulerEDMSampler(EDMSampler):
         cond: dict,
         uc: dict,
         gamma: float = 0.0,
+        log_guider = None, # Guider to use during logging
         **guider_kwargs,
     ) -> torch.Tensor:
         sigma_hat = sigma * (gamma + 1.0) + 1e-6 # 1e-6 term not in EDMSampler
@@ -229,7 +230,12 @@ class EulerEDMSampler(EDMSampler):
 
         # this is just BaseDiffusionSampler denoise func
         denoised = denoiser(*self.guider.prepare_inputs(x, sigma_hat, cond, uc))
-        denoised = self.guider(denoised, sigma_hat, scale, **guider_kwargs)
+        if "scale" not in guider_kwargs:
+            guider_kwargs["scale"] = scale
+        if log_guider is None:
+            denoised = self.guider(denoised, sigma_hat, **guider_kwargs)
+        else:
+            denoised = log_guider(denoised, sigma_hat, **guider_kwargs)
 
         d = to_d(x, sigma_hat, denoised)
         dt = append_dims(next_sigma - sigma_hat, x.ndim)
@@ -253,7 +259,7 @@ class EulerEDMSampler(EDMSampler):
             uc,
             num_steps,
         )
-        for i in self.get_sigma_gen(num_sigmas, verbose=verbose):
+        for i in self.get_sigma_gen(num_sigmas):
             gamma = (
                 min(self.s_churn / (num_sigmas - 1), 2**0.5 - 1)
                 if self.s_tmin <= sigmas[i] <= self.s_tmax

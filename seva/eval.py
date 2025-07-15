@@ -1187,7 +1187,7 @@ def get_value_dict(
     c2w[:, :3, 3] -= ref_c2ws[valid_mask, :3, 3].mean(0, keepdim=True)
     w2c = torch.linalg.inv(c2w)
 
-    # camera normalization
+    # camera scaling
     camera_dists = c2w[:, :3, 3].clone()
     translation_scaling_factor = (
         camera_scale
@@ -1279,11 +1279,12 @@ def do_sample(
             "concat": uc_concat,
             "dense_vector": uc_dense_vector,
         }
+
         unload_model(ae)
         unload_model(conditioner)
 
         additional_model_inputs = {"num_frames": T}
-        additional_sampler_inputs = {
+        additional_sampler_inputs = { # may not need if not using MVCFG
             "c2w": value_dict["c2w"].to("cuda"),
             "K": value_dict["K"].to("cuda"),
             "input_frame_mask": value_dict["cond_frames_mask"].to("cuda"),
@@ -1585,6 +1586,7 @@ def run_one_scene(
                 all_c2ws=camera_cond["c2w"],
                 camera_scale=options.get("camera_scale", 2.0),
             )
+            # c2ws are transformed from center + scaling
             samplers = create_samplers(
                 options["guider_types"],
                 discretization,

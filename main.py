@@ -23,6 +23,7 @@ from pytorch_lightning.loggers import WandbLogger
 from pytorch_lightning.trainer import Trainer
 from pytorch_lightning.utilities import rank_zero_only
 from diffusers import AutoencoderKL
+from seva.sampling import MultiviewCFG
 from sgm.util import exists, instantiate_from_config, isheatmap
 
 import threading
@@ -674,7 +675,11 @@ class ImageLogger(Callback):
                     if len(pl_module.conditioner.embedders) > 0
                     else [],
                 )
-                sampling_kwargs = {}
+
+                sampling_kwargs = {
+                    "log_guider": MultiviewCFG(cfg_min=1.2), # when logging (eval), use inference guider
+                    "scale": 1.2
+                }
 
                 # keep GPU until we have the generated latents
                 N = min(x.shape[0], self.max_images)

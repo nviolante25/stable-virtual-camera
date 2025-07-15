@@ -365,7 +365,7 @@ class MVHumanNetDataset(Dataset):
         data_limit=None,
         only_include=None,
         crop=True,
-        apply_scale_factor=True,
+        white_background=False,
     ):
         self.root_dir = root_dir             # directory of all subject directories
         self.latents_dir = latents_dir       # directory of all latents
@@ -376,7 +376,8 @@ class MVHumanNetDataset(Dataset):
         self.data_limit = data_limit         # TEMP -- only get the first 'data_limit' (int) subjects
         self.crop = crop
         self.adjacent_frame_sampling_prob = 0.2 # Trajectory NVS acceptance rate
-        self.apply_scale_factor = apply_scale_factor
+        self.white_background = white_background
+        self._autoencoder = None
         if num_images >= 16: # LIMIT to 16 images
             self.num_images = 16
 
@@ -410,6 +411,13 @@ class MVHumanNetDataset(Dataset):
             cleaned_data[camera_id] = value
         return cleaned_data
 
+    def init_autoencoder(self, autoencoder):
+        self._autoencoder = autoencoder
+
+    def random_crop(self, image, K):
+        # return cropped image, updated K
+        # TODO: implement
+        pass
 
     def _load_scenes(self):
         """
@@ -525,6 +533,26 @@ class MVHumanNetDataset(Dataset):
         sampled_image_paths = [sampled_image_paths[i] for i in images_permutation]
         sampled_image_mask_paths = [sampled_image_mask_paths[i] for i in images_permutation]
 
+        
+        # Load frames from image paths
+        # (T,3,H,W)
+        frames = torch.zeros((self.num_images, 3, self.target_shape[0],  self.target_shape[1]))
+        for i, (img_path, mask_path) in enumerate(zip(sampled_image_paths, sampled_image_mask_paths)):
+            image = Image.open(img_path).convert("RGB")
+            img_mask = Image.open(mask_path)
+
+            # Create masked image by compositing with black background
+            if self.white_background:
+                background = Image.new('RGB', image.size, (255, 255, 255))
+            else: # black
+                background = Image.new('RGB', image.size, (0, 0, 0))
+
+            masked_image = Image.composite(image, background, img_mask)
+            # Apply transforms after masking
+            # NOTE: if using non-cropped latents, then transforms is just the default as in @dataset.py
+            masked_image = self.transform(masked_image)
+            frames[i] = masked_image
+
         # load latents
         if self.latents_dir is not None:
             latents_dir = subject_path.replace(self.root_dir, self.latents_dir)
@@ -534,25 +562,17 @@ class MVHumanNetDataset(Dataset):
             latent_tensors = [npz_data[f"{sample_cam}.{timestep}"] for sample_cam in camera_order]
             clean_latents = torch.stack([torch.from_numpy(latent_tensor) for latent_tensor in latent_tensors])
             # (batch_size, 4, 72, 72)
-        else:
-            # currently, we REQUIRE precomputed latents, so we throw error
-            # (possibly add on-the-fly computation later)
-            clean_latents = None
-            raise ValueError("Latents directory must be provided for MVHumanNetDataset (as of now)")
-
-        # Load frames from image paths
-        # (T,3,H,W)
-        frames = torch.zeros((self.num_images, 3, self.target_shape[0],  self.target_shape[1]))
-        for i, (img_path, mask_path) in enumerate(zip(sampled_image_paths, sampled_image_mask_paths)):
-            image = Image.open(img_path).convert("RGB")
-            img_mask = Image.open(mask_path)
-            # Create masked image by compositing with black background
-            background = Image.new('RGB', image.size, (0, 0, 0))
-            masked_image = Image.composite(image, background, img_mask)
-            # Apply transforms after masking
-            # NOTE: if using non-cropped latents, then transforms is just the default as in @dataset.py
-            masked_image = self.transform(masked_image)
-            frames[i] = masked_image
+        else: # only the fly latent encoding
+            if self._autoencoder is not None:
+                clean_latents = torch.zeros((self.num_images, 4, self.target_shape[0], self.target_shape[1]), device="cuda")
+                # this automatically applies the scale factor if using seva AE
+                # ! - HACK: reset the scale factor applied within the seva AE
+                with torch.no_grad():
+                    frames = frames.to("cuda")
+                    clean_latents = (self._autoencoder.encode(frames, chunk_size=1) / self.scale_factor).to("cpu")
+                    frames = frames.to("cpu") # back to CPU
+            else:
+                raise ValueError("Need to call _init_autoencoder() to encode latents on the fly. Otherwise, precomputed latents are required.")
 
         # Sample input/target frame split
         num_input_frames = np.random.randint(1, self.num_images) # at least 1 input frame

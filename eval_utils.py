@@ -37,9 +37,13 @@ from sgm.modules.diffusionmodules.wrappers import SevaWrapper, SevaWrapperV2
 import yaml
 from omegaconf import OmegaConf
 from seva.sampling import EulerEDMSampler, DDPMDiscretization, MultiviewCFG, DiscreteDenoiser
+from sgm.util import get_obj_from_str
 
 from seva.data_io import COLMAPParser
 import pycolmap
+import torch
+import torch.nn.functional as F
+from scipy.optimize import linear_sum_assignment
 
 # EVAL
 
@@ -417,12 +421,13 @@ def show_tensor_batch(images: torch.Tensor, frames: torch.Tensor=None, masks=Non
         images = torch.stack(bordered_images)
 
     grid = torchvision.utils.make_grid(images, nrow=nrow, padding=16)
-    npimg = grid.permute(1, 2, 0).cpu().numpy()
+    npimg = grid.permute(1, 2, 0).cpu().numpy().copy()
     plt.figure(figsize=(24, 12))
     plt.imshow(npimg)
     plt.axis('off')
     plt.show()
     return npimg
+
 
 def compute_psnr(pred: torch.Tensor, target: torch.Tensor) -> torch.Tensor:
     """Compute Peak Signal-to-Noise Ratio between predicted and target images.
@@ -485,7 +490,7 @@ def compute_lpips(pred, target, normalized=False):
 
 from einops import repeat
 
-def run_seva_sample(batch, model_components, scale_factor=0.18215, cfg=2.0):
+def run_seva_sample(batch, model_components, scale_factor=0.18215, cfg=2.0, vanilla=True):
     """
     Runs the SEVA sampling pipeline on a batch using provided model components.
 
@@ -527,7 +532,11 @@ def run_seva_sample(batch, model_components, scale_factor=0.18215, cfg=2.0):
             latents, (0, 0, 0, 0, 0, 1), value=1.0
         )
         frames = frames.reshape(T, 3, 576, 576)
-        c_crossattn = repeat(conditioner(frames).mean(0), "d -> n 1 d", n=T)
+        
+        if vanilla:
+            c_crossattn = repeat(conditioner(frames).mean(0), "d -> n 1 d", n=T)
+        else:
+            c_crossattn = repeat(conditioner(batch)["crossattn"].mean(0), "1 d -> n 1 d", n=T)
         uc_crossattn = torch.zeros_like(c_crossattn)
         c_replace = latents.new_zeros(T, *latents.shape[1:])
         c_replace[input_masks] = latents[input_masks]
@@ -562,7 +571,9 @@ def run_seva_sample(batch, model_components, scale_factor=0.18215, cfg=2.0):
             "dense_vector": uc_dense_vector,
         }
 
-        additional_model_inputs = {"num_frames": T}
+        additional_model_inputs = {
+            "num_frames": T,
+        }
 
         randn = torch.randn(T, 4, 72, 72).to("cuda")
         samples_z = sampler(
@@ -695,8 +706,8 @@ def load_from_transforms_json_and_split(
 
     all_c2ws[:, :, [1,2]] *= -1 # this is fine (OpenGL -> OpenCV)
 
-    c2ws = all_c2ws[images_idx]
-    center_cameras(all_c2ws, c2ws) # mean center
+    c2ws = all_c2ws[images_idx].clone()
+    center_cameras(c2ws, c2ws) # mean center (batch-wise), assumes context window T == len(c2ws)
     scale_cameras(c2ws)
 
     camera_mask = torch.ones(len(images_idx), dtype=torch.bool)
@@ -874,6 +885,105 @@ def create_batch_manually(
 
     return batch
 
+def compute_image_similarity(img1: torch.Tensor, img2: torch.Tensor, method: str = 'ssim') -> float:
+    """Compute similarity between two images (3, H, W tensors)."""
+    if method == 'ssim':
+        mu1, mu2 = img1.mean(), img2.mean()
+        sigma1_sq, sigma2_sq = img1.var(), img2.var()
+        sigma12 = ((img1 - mu1) * (img2 - mu2)).mean()
+        c1, c2 = 0.01 ** 2, 0.03 ** 2
+        ssim = ((2 * mu1 * mu2 + c1) * (2 * sigma12 + c2)) / ((mu1 ** 2 + mu2 ** 2 + c1) * (sigma1_sq + sigma2_sq + c2))
+        return ssim.item()
+    elif method == 'mse':
+        return -F.mse_loss(img1, img2).item()
+    elif method == 'psnr':
+        mse = F.mse_loss(img1, img2)
+        return 20 * torch.log10(1.0 / torch.sqrt(mse)).item() if mse > 0 else float('inf')
+    else:
+        raise ValueError(f"Unknown method: {method}")
+
+def align_generated_to_ground_truth(ground_truths: torch.Tensor, generated: torch.Tensor, method: str = 'ssim'):
+    """
+    Reorder 'generated' tensor to match 'ground_truths' using image similarity.
+    NOTE: does not guarantee ordering, but assigns to the closest match.
+    Args:
+        ground_truths: (N, 3, H, W) ordered reference images
+        generated:     (N, 3, H, W) unordered predictions
+        method:        Similarity metric ('ssim', 'mse', 'psnr')
+    Returns:
+        ordered_generated: (N, 3, H, W) reordered to best match GTs
+        indices: list of indices used to permute `generated`
+    """
+    N = ground_truths.shape[0]
+    similarity_matrix = torch.zeros(N, N)
+
+    # Compute pairwise similarity
+    for i in range(N):
+        for j in range(N):
+            similarity_matrix[i, j] = compute_image_similarity(ground_truths[i], generated[j], method)
+
+    # Solve optimal assignment using Hungarian algorithm
+    row_idx, col_idx = linear_sum_assignment(-similarity_matrix.numpy())  # maximize similarity
+
+    ordered_generated = generated[col_idx]
+    return ordered_generated, col_idx
+
+def batch_to_seva_folder(batch, output_dir):
+    """
+    Given a batch from a dataloader, save it to a folder in a format expected by Seva.
+    The transforms.json, images, and split files and directories will be created at output_dir.
+    """
+    try:
+        frames = batch["frames"] # images (cropped)
+        input_mask = batch["mask"] # split
+        c2w = batch["c2ws"] # transforms.json
+        K = batch["Ks"]
+    except:
+        raise ValueError("Batch does not contain the required keys")
+    
+    # create output directory
+    os.makedirs(output_dir, exist_ok=True)
+    os.makedirs(os.path.join(output_dir, "images"), exist_ok=True)
+
+    # save images
+    frames = frames.reshape(-1, *frames.shape[-3:])
+    c2w = c2w.reshape(-1, 4, 4)
+    K = K.reshape(-1, 3, 3)
+    input_mask = input_mask.reshape(-1)
+    for i, frame in enumerate(frames):
+        frame_denorm = (frame * 0.5 + 0.5).permute(1,2,0).numpy()
+        save_image(frame_denorm, os.path.join(output_dir, "images", f"image_{i:04d}.png"))
+
+    # save transforms.json (c2w OpenGL format)
+    with open(os.path.join(output_dir, "transforms.json"), "w") as f:
+        transforms_content = {
+            "orientation_override": "none",
+            "frames": []
+        }
+        c2w = c2w @ np.array(np.diag([1.0, -1.0, -1.0, 1.0])) # convert to OpenGL format
+        for i, c2w in enumerate(c2w):  
+            transforms_content["frames"].append({
+                "file_path": f"images/image_{i:04d}.png",
+                "transform_matrix": c2w.tolist(),
+                "w": list(frames.shape[2:]),
+                "h": list(frames.shape[2:]),
+                "fl_x": K[i, 0, 0].item(),
+                "fl_y": K[i, 1, 1].item(),
+                "cx": K[i, 0, 2].item(),
+                "cy": K[i, 1, 2].item(),
+            })
+        json.dump(transforms_content, f)
+
+    # save train test split
+    num_inputs = torch.sum(input_mask).item()
+    with open(os.path.join(output_dir, f"train_test_split_{num_inputs}.json"), "w") as f:
+        json.dump({
+            "train_ids": torch.where(input_mask == 1)[0].tolist(),
+            "test_ids": torch.where(input_mask == 0)[0].tolist()
+        }, f)
+
+    print(f"Saved batch to {output_dir}")
+
 
 def save_tensor_dict(tensor_dict, file_path):
     """
@@ -895,49 +1005,63 @@ def save_image(array, file_path):
     im.save(file_path)
 
 
-def init_seva(vanilla: bool=True):
+def init_seva(vanilla: bool=True, **kwargs):
     # * BELOW: faithful Seva process
-    with torch.autocast("cuda"):
-        ae = AutoEncoder(chunk_size=1).eval().to("cuda")
-        conditioner = CLIPConditioner().to("cuda") # change this to GeneralConditioner with SevaFrozenOpenCLIPImageEmbedder and test for equality
-        sampler = EulerEDMSampler(
-            discretization=DDPMDiscretization(
-                linear_start=5e-06,
-                linear_end=0.012,
-                num_timesteps=1000,
-                log_snr_shift=2.4,
-            ),
-            guider=MultiviewCFG(cfg_min=1.2),
-            num_steps=50,
-            s_churn=0.0,
-            s_tmin=0.0,
-            s_tmax=999.0,
-            s_noise=1.0,
-        )
-        denoiser = DiscreteDenoiser(
-            discretization=DDPMDiscretization(),
-            num_idx=1000,
-            device="cuda",
-        )
-
-        model = SGMWrapper( # swap to SevaWrapper during training
-            instantiate_from_config(
-                {
-                    "target": "seva.modules.lora_wrapper.SevaLoRAWrapper",
-                    "params": {
-                        "seva_model_config": {
-                            "target": "seva.utils.load_model",
-                        },
-                        "self_attn_rank": 4,
-                        "cross_attn_rank": 8,
-                        "alpha": 16.0,
-                        "dropout": 0.0,
-                        "target_modules": ["TransformerBlockTimeMix", "MultiviewTransformer", "TransformerBlock"],
-                        "keys_to_lora": ["q", "k", "v"],
-                    }
-                }
+    if vanilla: # run Seva as it is in the demo
+        with torch.autocast("cuda"):
+            ae = AutoEncoder(chunk_size=1).eval().to("cuda")
+            conditioner = CLIPConditioner().to("cuda") # change this to GeneralConditioner with SevaFrozenOpenCLIPImageEmbedder and test for equality
+            sampler = EulerEDMSampler(
+                discretization=DDPMDiscretization(
+                    linear_start=5e-06,
+                    linear_end=0.012,
+                    num_timesteps=1000,
+                    log_snr_shift=2.4,
+                ),
+                guider=MultiviewCFG(cfg_min=1.2),
+                num_steps=50,
+                s_churn=0.0,
+                s_tmin=0.0,
+                s_tmax=999.0,
+                s_noise=1.0,
             )
-        ).to("cuda")
+            denoiser = DiscreteDenoiser(
+                discretization=DDPMDiscretization(),
+                num_idx=1000,
+                device="cuda",
+            )
+
+            model = SGMWrapper( # swap to SevaWrapper during training
+                instantiate_from_config(
+                    {
+                        "target": "seva.modules.lora_wrapper.SevaLoRAWrapper",
+                        "params": {
+                            "seva_model_config": {
+                                "target": "seva.utils.load_model",
+                            },
+                            "self_attn_rank": 4,
+                            "cross_attn_rank": 8,
+                            "alpha": 16.0,
+                            "dropout": 0.0,
+                            "target_modules": ["TransformerBlockTimeMix", "MultiviewTransformer", "TransformerBlock"],
+                            "keys_to_lora": ["q", "k", "v"],
+                        }
+                    }
+                )
+            ).to("cuda")
+    else: # run Seva as we would during training time
+        config_path = kwargs.get("config_path", "configs/example_training/seva-clipl_dl3dv.yaml")
+        config = OmegaConf.load(config_path)
+        components_config = config.model.params
+        ae = instantiate_from_config(components_config.first_stage_config)
+        conditioner = instantiate_from_config(components_config.conditioner_config)
+        sampler = instantiate_from_config(components_config.sampler_config)
+        denoiser = instantiate_from_config(components_config.denoiser_config)
+        seva_model = instantiate_from_config(components_config.network_config)
+        wrapper = get_obj_from_str(components_config.network_wrapper)
+        model = wrapper(seva_model)
+        # use DDPMDiscretization
+        # use IdentityGuider
 
     model_components = {
         "autoencoder": ae,
@@ -948,26 +1072,6 @@ def init_seva(vanilla: bool=True):
     }
     return model_components
 
-
-# ! - below: config for ported Seva code
-# Load the config file
-# config_path = "configs/example_training/seva-true.yaml"
-# config = OmegaConf.load(config_path)
-# components_config = config.model.params
-
-# # setup components from YAML config
-# first_stage = instantiate_from_config(components_config.first_stage_config) # should stay IdentityFirstStage/DecoderOnly
-# conditioner = instantiate_from_config(components_config.conditioner_config) # GeneralConditioner
-# sampler = instantiate_from_config(components_config.sampler_config) # EulerEDMSampler (Seva implementation)
-# denoiser = instantiate_from_config(components_config.denoiser_config).to("cuda") # SevaDiscreteDenoiser
-# sigma_sampler = instantiate_from_config(components_config.loss_fn_config.params.sigma_sampler_config) # DiscreteSampling with DDPMDiscretization
-# model = SevaWrapper(instantiate_from_config(components_config.network_config).eval()).to("cuda")
-
-# use DDMPDiscretization over LegacyDDPM
-
-
-# Legacy (put in init_model when vanilla=False)
-# then, match results with the original seva model
 
 # def run_one_scene(model, conditioner, sigma_sampler, denoiser, batch):
 #     with torch.no_grad():
