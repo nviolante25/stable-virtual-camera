@@ -62,14 +62,13 @@ class SevaWrapper(IdentityWrapper):
         t = repeat(t, "b -> (b f)", f=f)
         y = repeat(c["crossattn"], "b 1 c -> (b f) 1 c", f=f)
 
-
         out = self.diffusion_model(
             x,
             t=t,
             y=y,
             dense_y=dense_y,
-            num_frames=f,
-            **kwargs,
+            num_frames=f
+            # **kwargs,
         )
         out = rearrange(out, "(b f) c h w -> b f c h w", f=f)
         return out

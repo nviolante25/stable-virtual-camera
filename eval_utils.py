@@ -589,8 +589,8 @@ def run_seva_sample(batch, model_components, scale_factor=0.18215, cfg=2.0, vani
             cond=c,
             uc=uc,
             **{
-                "c2w": batch["c2ws"].reshape(T, 4, 4).to("cuda"),
-                "K": batch["Ks"].reshape(T, 3, 3).to("cuda"),
+                "c2w": batch["c2w"].reshape(T, 4, 4).to("cuda"),
+                "K": batch["K"].reshape(T, 3, 3).to("cuda"),
                 "input_frame_mask": input_masks.to("cuda"),
             },
         )
@@ -755,8 +755,8 @@ def load_from_transforms_json_and_split(
         "concat": concat,
         "frames": frames,
         "replace": replace,
-        "c2ws": c2ws,
-        "Ks": Ks,
+        "c2w": c2ws,
+        "K": Ks,
     }
 
     return batch
@@ -936,8 +936,8 @@ def batch_to_seva_folder(batch, output_dir):
     try:
         frames = batch["frames"] # images (cropped)
         input_mask = batch["mask"] # split
-        c2w = batch["c2ws"] # transforms.json
-        K = batch["Ks"]
+        c2w = batch["c2w"] # transforms.json
+        K = batch["K"]
     except:
         raise ValueError("Batch does not contain the required keys")
     

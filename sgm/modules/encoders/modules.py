@@ -1133,7 +1133,8 @@ class SevaFrozenOpenCLIPImageEmbedder(AbstractEmbModel):
 
     def encode_with_vision_transformer(self, img):
         img = self.preprocess(img)
-        x = self.model.visual(img)
+        # x = self.model.visual(img)
+        x = self.model.encode_image(img) # this is what CLIPConditioner uses (different block than 'visual')
         return x
 
     def encode(self, text):

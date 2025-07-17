@@ -14,6 +14,8 @@ from ...modules.diffusionmodules.sampling_utils import (get_ancestral_step,
                                                         to_d, to_neg_log_sigma,
                                                         to_sigma)
 from ...util import append_dims, default, instantiate_from_config
+from seva.sampling import MultiviewCFG
+from sgm.modules.diffusionmodules.guiders import IdentityGuider
 
 DEFAULT_GUIDER = {"target": "sgm.modules.diffusionmodules.guiders.IdentityGuider"}
 
@@ -219,7 +221,6 @@ class EulerEDMSampler(EDMSampler):
         cond: dict,
         uc: dict,
         gamma: float = 0.0,
-        log_guider = None, # Guider to use during logging
         **guider_kwargs,
     ) -> torch.Tensor:
         sigma_hat = sigma * (gamma + 1.0) + 1e-6 # 1e-6 term not in EDMSampler
@@ -232,10 +233,13 @@ class EulerEDMSampler(EDMSampler):
         denoised = denoiser(*self.guider.prepare_inputs(x, sigma_hat, cond, uc))
         if "scale" not in guider_kwargs:
             guider_kwargs["scale"] = scale
-        if log_guider is None:
+
+        if isinstance(self.guider, MultiviewCFG):
             denoised = self.guider(denoised, sigma_hat, **guider_kwargs)
+        elif isinstance(self.guider, IdentityGuider):
+            denoised = self.guider(denoised, sigma_hat)
         else:
-            denoised = log_guider(denoised, sigma_hat, **guider_kwargs)
+            raise ValueError(f"Unknown guider: {self.guider}")
 
         d = to_d(x, sigma_hat, denoised)
         dt = append_dims(next_sigma - sigma_hat, x.ndim)

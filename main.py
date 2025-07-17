@@ -676,22 +676,25 @@ class ImageLogger(Callback):
                     else [],
                 )
 
-                sampling_kwargs = {
-                    "log_guider": MultiviewCFG(cfg_min=1.2), # when logging (eval), use inference guider
-                    "scale": 1.2
-                }
+                uc["plucker"] = c["plucker"] # camera embeds are the same (test time)
+
+                sampling_kwargs = {}
+                if isinstance(pl_module.sampler.guider, MultiviewCFG):
+                    sampling_kwargs["c2w"] = batch.get("c2w", None)
+                    sampling_kwargs["K"] = batch.get("K", None)
+                    sampling_kwargs["input_frame_mask"] = batch.get("mask", None)
 
                 # keep GPU until we have the generated latents
-                N = min(x.shape[0], self.max_images)
+                N = min(x.shape[0], self.max_images) # these only get the first N batches
                 x = x.to(pl_module.device)[:N]
-                z = pl_module.encode_first_stage(x) # identity; keep encoding on GPU
+                z = pl_module.encode_first_stage(x) # identity; keep encoding on GPU (scales clean_latents using scale_factor)
 
                 for k in c:
                     if isinstance(c[k], torch.Tensor):
                         c[k], uc[k] = map(lambda y: y[k][:N].to(pl_module.device), (c, uc))
                 # sample latents for targets
                 if sample:
-                    with pl_module.ema_scope("Plotting"):
+                    with pl_module.ema_scope("Plotting"): 
                         samples = pl_module.sample(
                             c, shape=z.shape[1:], uc=uc, batch_size=N, **sampling_kwargs
                         )

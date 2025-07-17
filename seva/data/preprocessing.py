@@ -229,7 +229,10 @@ def get_bbox_from_annot(annot):
     return [float(bbox[0]), float(bbox[1]), float(bbox[2]), float(bbox[3])]
 
 def get_bbox_center_and_size(bbox):
-    """Get center point and size of bbox."""
+    """
+    Get center point and size of bbox.
+    Returns (center_x, center_y), (width, height)
+    """
     x1, y1, x2, y2 = bbox
     center_x = (x1 + x2) / 2
     center_y = (y1 + y2) / 2
@@ -248,15 +251,19 @@ def get_mvhumannet_extrinsics(extrinsics_dict, scale):
     return extrinsics
 
 def update_intrinsics(K, crop_x=0, crop_y=0, scale=1.0, crop_first=True, padding_mode=False):
-    """Update intrinsic matrix for the crop and resizes."""
+    """
+    Update intrinsic matrix for the crop and resizes.
+    If crop is negative, then is considered a padding (need to set padding_mode=True).
+    Returns updated K matrix.
+    """
     K_new = K.copy() if type(K) == np.ndarray else K.clone()
     if crop_first:
-        K_new = update_intrinsics_crop(K, crop_x, crop_y, padding_mode)
+        K_new = update_intrinsics_crop(K_new, crop_x, crop_y, padding_mode)
         if not isclose(scale, 1):
             K_new = update_intrinsics_resize(K_new, scale)
     else:
         if not isclose(scale, 1):
-            K_new = update_intrinsics_resize(K, scale)
+            K_new = update_intrinsics_resize(K_new, scale)
         K_new = update_intrinsics_crop(K_new, crop_x, crop_y, padding_mode)
     return K_new
 
