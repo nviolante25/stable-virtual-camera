@@ -420,10 +420,10 @@ class VAEWorker:
                 continue
                 
             # Create temporary file to indicate processing is in progress
-            tmp_file = os.path.join(target_subject_path, ".processing")
-            if os.path.exists(tmp_file):
-                print(f"Worker {self.rank}: Skipping {subject} - being processed by another worker. ")
-                continue
+            # tmp_file = os.path.join(target_subject_path, ".processing")
+            # if os.path.exists(tmp_file):
+            #     print(f"Worker {self.rank}: Skipping {subject} - being processed by another worker. ")
+            #     continue
 
             # Create directory FIRST, then create the processing file
             os.makedirs(target_subject_path, exist_ok=True)
@@ -477,7 +477,7 @@ class VAEWorker:
                 print(f"Worker {self.rank}: Error processing subject {subject}: {e}")
                 # write subject name to file for later processing
                 with open(os.path.join(target_subject_path, "missing_files.txt"), "a") as f:
-                    f.write(f"{subject}\n")
+                    f.write(f"{subject}: {e}\n")
                 continue
                 
             # save all latents to singular {subject}.npz file
