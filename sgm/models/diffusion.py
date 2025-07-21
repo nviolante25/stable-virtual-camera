@@ -14,6 +14,7 @@ from ..modules.diffusionmodules.wrappers import OPENAIUNETWRAPPER
 from ..modules.ema import LitEma
 from ..util import (default, disabled_train, get_obj_from_str,
                     instantiate_from_config, log_txt_as_img)
+from seva.sampling import MultiviewCFG
 
 def compute_psnr(pred, target):
     mse = torch.nn.functional.mse_loss(pred, target)
@@ -332,12 +333,13 @@ class DiffusionEngine(pl.LightningModule):
         **kwargs,
     ):
         randn = torch.randn(batch_size, *shape).to(self.device)
-
         denoiser = lambda input, sigma, c: self.denoiser(
             self.model, input, sigma, c, **kwargs
         )
-        log_guider = kwargs.get("log_guider", None)
-        samples = self.sampler(denoiser, randn, cond, uc=uc, log_guider=log_guider)
+        if isinstance(self.sampler.guider, MultiviewCFG): # or anything that accepts kwargs
+            samples = self.sampler(denoiser, randn, scale=kwargs.get("scale", 2.0), cond=cond, uc=uc, **kwargs)
+        else:
+            samples = self.sampler(denoiser, randn, scale=kwargs.get("scale", 2.0), cond=cond, uc=uc)
         return samples
 
     @torch.no_grad()
@@ -412,8 +414,6 @@ class DiffusionEngine(pl.LightningModule):
             else [],
         )
 
-        sampling_kwargs = {}
-
         N = min(x.shape[0], N)
         x = x.to(self.device)[:N]
         # log["inputs"] = x
@@ -437,6 +437,13 @@ class DiffusionEngine(pl.LightningModule):
         for k in c:
             if isinstance(c[k], torch.Tensor):
                 c[k], uc[k] = map(lambda y: y[k][:N].to(self.device), (c, uc))
+
+        sampling_kwargs = {}
+        if isinstance(self.sampler, MultiviewCFG):
+            sampling_kwargs["c2w"] = batch.get("c2w", None)
+            sampling_kwargs["K"] = batch.get("K", None)
+            sampling_kwargs["input_frame_mask"] = batch.get("input_frame_mask", None)
+            sampling_kwargs["scale"] = kwargs.get("scale", 2.0)
 
         if sample:
             with self.ema_scope("Plotting"):

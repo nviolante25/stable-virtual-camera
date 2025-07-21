@@ -694,10 +694,10 @@ class ImageLogger(Callback):
                         c[k], uc[k] = map(lambda y: y[k][:N].to(pl_module.device), (c, uc))
                 # sample latents for targets
                 if sample:
-                    with pl_module.ema_scope("Plotting"): 
-                        samples = pl_module.sample(
-                            c, shape=z.shape[1:], uc=uc, batch_size=N, **sampling_kwargs
-                        )
+                    # with pl_module.ema_scope("Plotting"): 
+                    samples = pl_module.sample(
+                        c, shape=z.shape[1:], uc=uc, batch_size=N, **sampling_kwargs
+                    )
 
                 # async decoder + log to wandb stage -- move to CPU
                 z = z.to("cpu")

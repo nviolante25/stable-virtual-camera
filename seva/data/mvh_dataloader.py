@@ -39,6 +39,7 @@ from seva.data.preprocessing import (
 )
 import time
 from seva.data.cropper import RandomBBoxCropper
+from seva.modules.autoencoder import AutoEncoder
 
 # NOTE: hardcoded camera order for each camera elevation (counter clockwise)
 # use for trajectory NVS training!
@@ -108,6 +109,8 @@ class MVHumanNetDataset(Dataset):
         only_include=None,
         random_crop=True,
         white_background=False,
+        step_size=1,
+        load_autoencoder=False
     ):
         self.root_dir = root_dir             # directory of all subject directories
         self.latents_dir = latents_dir       # directory of all latents
@@ -116,12 +119,15 @@ class MVHumanNetDataset(Dataset):
         self.pre_scale = pre_scale           # since MVHumanNet is downsampled, update intrinsics
         self.only_include = only_include     # TEMP -- include only these subjects (as List of strings)
         self.data_limit = data_limit         # TEMP -- only get the first 'data_limit' (int) subjects
+        self.step_size = step_size           # only processes every 'step_size' frames (timesteps)
         self.random_crop = random_crop       # NOTE: this is the toggle for probabilistic cropping 
                                              # ! unrelated to initial crop from crop_params.json
                                              # ! (human-centered 576x576 image crop) 
         self.adjacent_frame_sampling_prob = 0.2 # Trajectory NVS acceptance rate
         self.white_background = white_background
         self._autoencoder = None
+        if load_autoencoder:
+            self.init_autoencoder()
         if num_images >= 16: # LIMIT to 16 images
             self.num_images = 16
 
@@ -167,9 +173,8 @@ class MVHumanNetDataset(Dataset):
             cleaned_data[camera_id] = value
         return cleaned_data
 
-    def init_autoencoder(self, autoencoder):
-        self._autoencoder = autoencoder
-
+    def init_autoencoder(self):
+        self._autoencoder = AutoEncoder().eval().to("cuda")
 
     def _load_scenes(self):
         """
@@ -227,11 +232,16 @@ class MVHumanNetDataset(Dataset):
                 timestep = f"{i * 5:04d}"
                 frames = {}
                 for camera in camera_dirs:
+                    image_path = os.path.join(images_path, camera, f"{timestep}_img.jpg")
+                    mask_path = os.path.join(masks_path, camera, f"{timestep}_img_fmask.png")
+                    annots_path = os.path.join(annots_path, camera, f"{timestep}_img.json")
+                    if not os.path.exists(image_path) or not os.path.exists(mask_path):
+                        continue # skip if doesn't exist
                     frame = {
                         camera : {
-                            'image_path': os.path.join(images_path, camera, f"{timestep}_img.jpg"),
-                            'mask_path': os.path.join(masks_path, camera, f"{timestep}_img_fmask.png"),
-                            'annots_path': os.path.join(annots_path, camera, f"{timestep}_img.json")
+                            'image_path': image_path,
+                            'mask_path': mask_path,
+                            'annots_path': annots_path
                         }
                     }
                     frames.update(frame)
@@ -252,14 +262,14 @@ class MVHumanNetDataset(Dataset):
         subject_id = scene['subject_id'] # ex. 100001
         timestep = scene['timestep'] # ex. 0005
         frames_info = dict(sorted(scene['frames_info'].items())) # camera dict
-        subject_path = os.path.join(self.root_dir, subject_id) 
+        subject_path = os.path.join(self.root_dir, subject_id)
 
         # get camera parameters
         extrinsics = self.cam_params[subject_id]['extrinsics']
         intrinsics = np.array(self.cam_params[subject_id]['intrinsics'])
         camera_scale = self.cam_params[subject_id]['camera_scale'] 
 
-        if self.pre_scale != 1: # update intrinsics (for MVHumanNet default 0.5x prescaling)
+        if self.pre_scale != 1: # update intrinsics (required for MVHumanNet default 0.5x prescaling)
             intrinsics = update_intrinsics_resize(intrinsics, scale=self.pre_scale)
 
         # Sample frames indices
@@ -286,10 +296,9 @@ class MVHumanNetDataset(Dataset):
         sampled_image_paths = [sampled_image_paths[i] for i in images_permutation]
         sampled_image_mask_paths = [sampled_image_mask_paths[i] for i in images_permutation]
 
-        
         # Load frames from image paths
-        # (T,3,H,W)
-        frames = torch.zeros((self.num_images, 3, self.target_shape[0],  self.target_shape[1]))
+        # (T,3,H',W'), this will be scaled later to 'target_shape'
+        frames = torch.zeros((self.num_images, 3, self.image_shape[0],  self.image_shape[1]))
         for i, (img_path, mask_path) in enumerate(zip(sampled_image_paths, sampled_image_mask_paths)):
             image = Image.open(img_path).convert("RGB")
             img_mask = Image.open(mask_path)
@@ -304,7 +313,7 @@ class MVHumanNetDataset(Dataset):
             # Apply transforms after masking
             # NOTE: if using non-cropped latents, then transforms is just the default as in @dataset.py
             # masked_image = self.transform(masked_image) # ! moved transform to after random crop
-            frames[i] = masked_image
+            frames[i] = T.ToTensor()(masked_image)
 
         # Sample input/target frame split
         num_input_frames = np.random.randint(1, self.num_images) # at least 1 input frame
@@ -341,35 +350,47 @@ class MVHumanNetDataset(Dataset):
 
         if self.random_crop:
             # get random crop parameters for the subject
-            crop_params = np.load(os.path.join(subject_path, "crop_params.npz"))
-            crop_params = [crop_params[f"{cam}.{timestep}"] for cam in camera_order]
-            crop_params = torch.stack([torch.from_numpy(bbox) for bbox in crop_params])
+            # if crop_params.npz exists, use it
+            crop_params_path = os.path.join(subject_path, "crop_params.npz")
+            if os.path.exists(crop_params_path):
+                crop_params = np.load(crop_params_path)
+                crop_params = [crop_params[f"{cam}.{timestep}"] for cam in camera_order]
+                crop_params = torch.stack([torch.from_numpy(bbox) for bbox in crop_params]) # (B, 4)
+            else: # use 'annots' instead (less accurate bbox)
+                annots_jsons = [frames_info[cam]['annots_path'] for cam in camera_order]
+                crop_params = []
+                for annots_json in annots_jsons:
+                    annots = load_json(annots_json)
+                    bbox = annots['annots'][0]['bbox'][:4]
+                    crop_params.append(bbox)
+                crop_params = torch.stack([torch.from_numpy(bbox) for bbox in crop_params])
+
             cropped_imgs, Ks = self.cropper(frames, crop_params, torch.from_numpy(intrinsics).float())
-            Ks = normalize_intrinsics(Ks, self.image_shape[0], self.image_shape[1]) # normalize intrinsics (H,W)
+            # later, we resize using transform, so we update cropped intrinsics here accordingly
+            scale = np.array([self.target_shape[0] / cropped_img.shape[-2] for cropped_img in cropped_imgs])
+            Ks = update_intrinsics_resize(Ks, scale)
+            # ! PROBLEM: from crop, optical center can be negative, in which this does NOT work!
+            Ks = normalize_intrinsics(Ks, self.target_shape[0], self.target_shape[1]) # normalize intrinsics (H,W)
             if Ks.dim() == 2: # if one shared intrinsic matrix, then repeat it for all
                 Ks = repeat(Ks, 'd1 d2 -> n d1 d2', n=self.num_images)
-            frames = cropped_imgs
-
         else: # simply CenterCrop
             crop_amount  = (self.image_shape[1] - self.target_shape[0]) // 2 # (W - H) // 2: assumes W > H
             scale_amount = (self.target_shape[0] / self.image_shape[0])
             Ks = update_intrinsics(np.array(intrinsics), crop_x=crop_amount, crop_y=0, scale=scale_amount)
-            Ks = normalize_intrinsics(Ks, self.image_shape[0], self.image_shape[1]) # normalize intrinsics (H,W)
-            Ks = repeat(Ks, 'd1 d2 -> n d1 d2', n=self.num_images) # assumes all intrinsics are the same for now 
+            Ks = normalize_intrinsics(Ks, self.target_shape[0], self.target_shape[1]) # normalize intrinsics (H,W)
+            Ks = repeat(Ks, 'd1 d2 -> n d1 d2', n=self.num_images) # assumes all intrinsics are the same 
             Ks = torch.from_numpy(Ks).float()
 
         # NOTE: the behavior of transform will change depending on whether random crop is used
-        frames = self.transform(frames) # 576x576 image tensors
+        frames = [self.transform(frame) for frame in frames]
+        frames = torch.stack(frames, dim=0) # resize to 576x576 normalized [-1, 1] image tensorss
 
         # load latents if we provided a path
-        if self.latents_dir is not None:
-            latents_dir = subject_path.replace(self.root_dir, self.latents_dir)
-            npz_file = os.path.join(latents_dir, f"{subject_id}.npz")
+        if self.latents_dir is not None and os.path.exists(os.path.join(self.latents_dir, f"{subject_id}.npz")):
+            npz_file = os.path.join(self.latents_dir, f"{subject_id}.npz")
             npz_data = np.load(npz_file) # this is already for the current subject
-
             latent_tensors = [npz_data[f"{sample_cam}.{timestep}"] for sample_cam in camera_order]
-            clean_latents = torch.stack([torch.from_numpy(latent_tensor) for latent_tensor in latent_tensors])
-            # (batch_size, 4, 72, 72)
+            clean_latents = torch.stack([torch.from_numpy(latent_tensor) for latent_tensor in latent_tensors]) # (B, 4, 72, 72)
         else: # encode frames on the fly
             if self._autoencoder is not None:
                 clean_latents = torch.zeros((self.num_images, 4, self.target_shape[0], self.target_shape[1]), device="cuda")
@@ -422,37 +443,6 @@ class MVHumanNetDataset(Dataset):
             dim=1,
         )
 
-        # bbox params useful for cropping
-        # H, W = int(annots['height'] * self.pre_scale), int(annots['width'] * self.pre_scale) # images not yet scaled down
-        # bbox = torch.tensor(annots['annots'][0]['bbox'][:4])  # [x1, y1, x2, y2] (already scaled)
-        # (center_x, center_y), (size_x, size_y) = get_bbox_center_and_size(bbox)
-        # x1, y1, x2, y2 = int(bbox[0]), int(bbox[1]), int(bbox[2]), int(bbox[3])
-
-        # # distributions to sample
-        # # TODO: do this ONCE in init instead
-        # # additionally, add the option to not crop
-        # def center_sampler(batch_size):
-        #     # mean at center of bbox
-        #     mean = torch.tensor([x1 + size_x // 2, y1 + size_y // 2], dtype=torch.float32)
-        #     cov = torch.tensor([[size_x, 0], [0, size_y]], dtype=torch.float32)
-        #     weights = torch.tensor([0.7, 0.3])
-        #     # return generate_gaussian_samples(mean, cov, batch_size)
-        #     return generate_gaussian_mixture_samples([mean, (x1 + size_x // 2, y1)], [cov, cov], weights, batch_size)
-
-        # def length_sampler(batch_size):
-        #     # Example: Sample from a 1D Gaussian for crop size
-        #     mean = torch.tensor([(size_x + size_y) // 1.5], dtype=torch.float32)  # mean is the smallest dim
-        #     cov = torch.tensor([[max(size_x, size_y)]], dtype=torch.float32)
-        #     return generate_gaussian_samples(mean, cov, batch_size)
-
-        # # random crop the image
-        # random_cropper = RandomBBoxCrop(center_sampler, length_sampler)
-        # cropped_image, updated_K = random_cropper(
-        #     T.functional.to_tensor(masked_img).detach().clone(),
-        #     (x1, y1, x2, y2),
-        #     intrinsics
-        # )
-
         try:
             output_dict = {
                 "clean_latent": clean_latents,
@@ -470,92 +460,3 @@ class MVHumanNetDataset(Dataset):
             raise
 
         return output_dict
-
-
-class MVHumanNetLoader(pl.LightningDataModule):
-    def __init__(
-        self,
-        root_dir: str,
-        latents_dir: str,
-        num_images: int,
-        batch_size: int,
-        num_workers: int = 0,
-        shuffle: bool = True,
-        image_size: int = 576,
-        data_limit: int = None,
-        only_include: list = None,
-    ):
-        super().__init__()
-        
-        self.root_dir = root_dir
-        self.latents_dir = latents_dir
-        self.num_images = num_images
-        self.batch_size = batch_size
-        self.num_workers = num_workers
-        self.shuffle = shuffle
-        self.data_limit = data_limit
-        self.only_include = only_include
-        # Define transforms
-        # self.transform = T.Compose([
-        #     T.Resize(image_size), # whatever final resolution we want here
-        #     T.ToTensor(),
-        # ])
-        self.transform = None # let corresponding Dataset handle this
-
-    def setup(self, stage: Optional[str] = None):
-        if stage == "fit" or stage is None:
-            self.train_dataset = MVHumanNetDataset(
-                root_dir=os.path.join(self.root_dir),
-                latents_dir=os.path.join(self.latents_dir),
-                num_images=self.num_images,
-                transforms=self.transform,
-                data_limit=self.data_limit,
-                only_include=self.only_include
-            )
-
-            # self.val_dataset = MVHumanNetDataDictWrapper(
-            #     MVHumanNetDataset(
-            #         root_dir=os.path.join(self.root_dir, "val"),
-            #         transforms=self.transform
-            #     )
-            # )
-        if stage == "test" or stage is None:
-            self.test_dataset = MVHumanNetDataset(
-                root_dir=os.path.join(self.root_dir, "test"),
-                latents_dir=os.path.join(self.latents_dir),
-                num_images=self.num_images,
-                transforms=self.transform,
-                data_limit=self.data_limit,
-                only_include=self.only_include
-            )
-            
-
-    def prepare_data(self):
-        pass
-
-    def train_dataloader(self) -> DataLoader:
-        return DataLoader(
-            self.train_dataset,
-            batch_size=self.batch_size,
-            shuffle=self.shuffle,
-            num_workers=self.num_workers,
-            pin_memory=True
-        )
-
-    # def val_dataloader(self) -> DataLoader:
-    #     return DataLoader(
-    #         self.val_dataset,
-    #         batch_size=self.batch_size,
-    #         shuffle=False,
-    #         num_workers=self.num_workers,
-    #         pin_memory=True
-    #     )
-
-    def test_dataloader(self) -> DataLoader:
-        return DataLoader(
-            self.test_dataset,
-            batch_size=self.batch_size,
-            shuffle=False,
-            num_workers=self.num_workers,
-            pin_memory=True
-        )

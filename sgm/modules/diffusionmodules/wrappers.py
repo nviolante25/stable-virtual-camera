@@ -78,7 +78,6 @@ class SevaWrapperV2(IdentityWrapper):
     def forward(
         self, x: torch.Tensor, t: torch.Tensor, c: dict, **kwargs
     ) -> torch.Tensor:
-        print(f"SevaWrapperV2: {x.shape}, {t.shape}, {c.keys()}")
         x = torch.cat((x, c.get("concat", torch.Tensor([]).type_as(x))), dim=1)
         dense_y = c["dense_vector"]
         y = c["crossattn"]

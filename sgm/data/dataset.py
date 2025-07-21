@@ -342,8 +342,8 @@ class DL3DVDataset(Dataset):
                 "concat": concat,
                 "frames": frames,
                 "replace": replace,
-                "c2ws": c2ws,
-                "Ks": Ks,
+                "c2w": c2ws,
+                "K": Ks,
             }
         except Exception as e:
             print(f"Error creating output_dict: {e}")

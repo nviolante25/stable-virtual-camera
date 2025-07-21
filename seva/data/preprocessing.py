@@ -85,10 +85,10 @@ def normalize_intrinsics(intrinsics, H, W):
     """
     Normalize intrinsics to a smaller scale while preserving their relative positions.
     """
-    intrinsics[0, 0] = intrinsics[0, 0] / W
-    intrinsics[1, 1] = intrinsics[1, 1] / H
-    intrinsics[0, 2] = intrinsics[0, 2] / W
-    intrinsics[1, 2] = intrinsics[1, 2] / H
+    intrinsics[:, 0, 0] = intrinsics[:, 0, 0] / W
+    intrinsics[:, 1, 1] = intrinsics[:, 1, 1] / H
+    intrinsics[:, 0, 2] = intrinsics[:, 0, 2] / W
+    intrinsics[:, 1, 2] = intrinsics[:, 1, 2] / H
     return intrinsics
 
  
@@ -233,11 +233,11 @@ def get_bbox_center_and_size(bbox):
     Get center point and size of bbox.
     Returns (center_x, center_y), (width, height)
     """
-    x1, y1, x2, y2 = bbox
+    x1, y1, x2, y2 = bbox.T # (4, B)
     center_x = (x1 + x2) / 2
     center_y = (y1 + y2) / 2
-    width = x2 - x1
-    height = y2 - y1
+    width = x2 - x1 # (x2 - x1)
+    height = y2 - y1 # (y2 - y1)
     return (center_x, center_y), (width, height)
 
 
@@ -254,46 +254,68 @@ def update_intrinsics(K, crop_x=0, crop_y=0, scale=1.0, crop_first=True, padding
     """
     Update intrinsic matrix for the crop and resizes.
     If crop is negative, then is considered a padding (need to set padding_mode=True).
+    Crop_x and crop_y are integers; however, accepts tensors as well if K is a batch.
+    
     Returns updated K matrix.
+
     """
     K_new = K.copy() if type(K) == np.ndarray else K.clone()
+    K_new = torch.as_tensor(K_new)
     if crop_first:
-        K_new = update_intrinsics_crop(K_new, crop_x, crop_y, padding_mode)
+        K_new = update_intrinsics_crop(K_new, crop_x, crop_y)
         if not isclose(scale, 1):
             K_new = update_intrinsics_resize(K_new, scale)
     else:
         if not isclose(scale, 1):
             K_new = update_intrinsics_resize(K_new, scale)
-        K_new = update_intrinsics_crop(K_new, crop_x, crop_y, padding_mode)
+        K_new = update_intrinsics_crop(K_new, crop_x, crop_y)
     return K_new
 
-def update_intrinsics_crop(K, crop_x, crop_y, padding_mode=False):
+def update_intrinsics_crop(K, crop_x, crop_y):
     """
     Update intrinsic matrix for the crop.
-    If negative, then this is considered a padding (need to set padding_mode=True).
+    This can also be used for padding if crop_x and crop_y are negative.
     """
-    K_new = K.copy() if type(K) == np.ndarray else K.clone()
+    is_numpy = isinstance(K, np.ndarray)
+    crop_x = np.array(crop_x) if isinstance(crop_x, torch.Tensor) else crop_x
+    crop_y = np.array(crop_y) if isinstance(crop_y, torch.Tensor) else crop_y
+    K_new = K.copy() if is_numpy else K.clone()
+    K_new = K_new if is_numpy else K_new.numpy()
+    if len(K.shape) == 2:
+        K_new = K_new[None, ...]
     # padding mode enables negative "crops" to act as padding
-    if crop_x > 0 or padding_mode:
-        K_new[0, 2] = K[0, 2] - crop_x
-    if crop_y > 0 or padding_mode:
-        K_new[1, 2] = K[1, 2] - crop_y
+    # c_x
+    K_new[:, 0, 2] = K_new[:, 0, 2] - crop_x
+    K_new[:, 1, 2] = K_new[:, 1, 2] - crop_y
 
-    # if padding_mode == False: # this would need to be positive
-    #     assert K_new[0, 2] >= 0, f"crop_x is negative: {K_new[0, 2]}"
-    #     assert K_new[1, 2] >= 0, f"crop_y is negative: {K_new[1, 2]}"
-    
-    return K_new
+    if len(K.shape) == 2:
+        K_new = K_new[0, ...]
+    return K_new if is_numpy else torch.from_numpy(K_new)
 
 def update_intrinsics_resize(K, scale):
-    """Update intrinsic matrix for the resize."""
+    """
+    Update intrinsic matrix for the resize.
+    scale is a float or tensor of shape (B,).
+    """
     # Create new intrinsic matrix
-    K_new = K.clone() if type(K) == torch.Tensor else K
-    K_new[0, 0] = K[0, 0] * scale
-    K_new[1, 1] = K[1, 1] * scale
-    K_new[0, 2] = K[0, 2] * scale
-    K_new[1, 2] = K[1, 2] * scale
-    return K_new
+    is_numpy = isinstance(K, np.ndarray)
+    scale = np.array(scale) if isinstance(scale, torch.Tensor) else scale
+    K_new = K.copy() if is_numpy else K.clone()
+    K_new = K_new if is_numpy else K_new.numpy()
+
+    if len(K.shape) == 2:
+        K_new = K_new[None, ...]
+    scale_tensor = np.array(scale).reshape(-1, 1, 1)
+    K_new = K_new * scale_tensor
+
+    K_new[:, -1, :] = np.array([0, 0, 1])
+    # K_new[:, 0, 0] = K_new[:, 0, 0] * scale_tensor
+    # K_new[:, 1, 1] = K_new[:, 1, 1] * scale_tensor
+    # K_new[:, 0, 2] = K_new[:, 0, 2] * scale_tensor
+    # K_new[:, 1, 2] = K_new[:, 1, 2] * scale_tensor
+    if len(K.shape) == 2:
+        K_new = K_new[0, ...]
+    return K_new if is_numpy else torch.from_numpy(K_new)
 
 
 def crop_image(bbox, image, mask=None):
