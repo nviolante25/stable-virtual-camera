@@ -210,34 +210,34 @@ class VAEWorker:
             print(f"Worker {self.rank}: Error loading mask {mask_path}: {e}")
             return None
     
-    def _load_and_preprocess(self, image_path, mask_path, save_test_image=False):
-        """Legacy method - kept for compatibility but not used in optimized version"""
-        try:
-            # Load image
-            with Image.open(image_path) as img:
-                img = img.convert("RGB")
-                img_tensor = preprocess(img)
+    # def _load_and_preprocess(self, image_path, mask_path, save_test_image=False):
+    #     """Legacy method - kept for compatibility but not used in optimized version"""
+    #     try:
+    #         # Load image
+    #         with Image.open(image_path) as img:
+    #             img = img.convert("RGB")
+    #             img_tensor = preprocess(img)
             
-            # Load mask
-            with Image.open(mask_path) as mask:
-                mask = mask.convert("L")  # Convert to grayscale
-                # Use the same preprocessing pipeline as images (center crop + resize)
-                mask_tensor = mask_preprocess(mask)
+    #         # Load mask
+    #         with Image.open(mask_path) as mask:
+    #             mask = mask.convert("L")  # Convert to grayscale
+    #             # Use the same preprocessing pipeline as images (center crop + resize)
+    #             mask_tensor = mask_preprocess(mask)
             
-            # Apply mask (mask is 0-1, where 1 is foreground)
-            # For VAE encoding, we typically want to mask out background (set to 0)
-            # So we multiply the image by the mask
-            masked_image = img_tensor * mask_tensor
+    #         # Apply mask (mask is 0-1, where 1 is foreground)
+    #         # For VAE encoding, we typically want to mask out background (set to 0)
+    #         # So we multiply the image by the mask
+    #         masked_image = img_tensor * mask_tensor
             
-            # Save test image if requested
-            if save_test_image:
-                self._save_test_masked_image(image_path, img_tensor, mask_tensor, masked_image)
+    #         # Save test image if requested
+    #         if save_test_image:
+    #             self._save_test_masked_image(image_path, img_tensor, mask_tensor, masked_image)
             
-            return masked_image
+    #         return masked_image
             
-        except Exception as e:
-            print(f"Worker {self.rank}: Error processing image {image_path}: {e}")
-            return None
+    #     except Exception as e:
+    #         print(f"Worker {self.rank}: Error processing image {image_path}: {e}")
+    #         return None
     
     def _save_test_masked_image(self, image_path, original_tensor, mask_tensor, masked_tensor):
         """Save test images to verify masking"""
@@ -420,16 +420,16 @@ class VAEWorker:
                 continue
                 
             # Create temporary file to indicate processing is in progress
-            tmp_file = os.path.join(target_subject_path, ".processing")
-            if os.path.exists(tmp_file):
-                print(f"Worker {self.rank}: Skipping {subject} - being processed by another worker. ")
-                continue
+            # tmp_file = os.path.join(target_subject_path, ".processing")
+            # if os.path.exists(tmp_file):
+            #     print(f"Worker {self.rank}: Skipping {subject} - being processed by another worker. ")
+            #     continue
 
             # Create directory FIRST, then create the processing file
             os.makedirs(target_subject_path, exist_ok=True)
             
-            with open(tmp_file, 'w') as f:
-                f.write(str(os.getpid()))
+            # with open(tmp_file, 'w') as f:
+            #     f.write(str(os.getpid()))
 
             print(f"Worker {self.rank}: Processing subject {subject}")
             
@@ -477,7 +477,7 @@ class VAEWorker:
                 print(f"Worker {self.rank}: Error processing subject {subject}: {e}")
                 # write subject name to file for later processing
                 with open(os.path.join(target_subject_path, "missing_files.txt"), "a") as f:
-                    f.write(f"{subject}\n")
+                    f.write(f"{subject}: {e}\n")
                 continue
                 
             # save all latents to singular {subject}.npz file
@@ -485,20 +485,20 @@ class VAEWorker:
                 if subject_latents_dict:
                     np.savez_compressed(os.path.join(target_subject_path, f"{subject}.npz"), **subject_latents_dict)
                     # Remove .processing indicator file safely
-                    try:
-                        os.remove(tmp_file)
-                    except FileNotFoundError:
-                        pass  # File was already removed
+                    # try:
+                    #     # os.remove(tmp_file)
+                    # except FileNotFoundError:
+                    #     pass  # File was already removed
                     del subject_latents_dict
                     print(f"Worker {self.rank}: Finished subject {subject}.")
                 else:
                     print(f"Worker {self.rank}: No latents processed for subject {subject}")
             except Exception as e:
                 # Remove .processing indicator file safely on error
-                try:
-                    os.remove(tmp_file)
-                except FileNotFoundError:
-                    pass  # File was already removed
+                # try:
+                #     # os.remove(tmp_file)
+                # except FileNotFoundError:
+                    # pass  # File was already removed
                 print(f"Worker {self.rank}: Error saving subject NPZ for {subject}: {e}")
 
         print("Finished processing all subjects.")
