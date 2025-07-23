@@ -72,7 +72,7 @@ class RandomBBoxCropper(object):
         print("samples:")
         print(center_mean, center_std, crop_size_mean, crop_size_std)
 
-        # sample new center and length of crop
+        # * sample new center and length of crop
         center_sample = torch.randn(B, 2) * center_std    + center_mean
         size_sample   = torch.randn(B) * crop_size_std + crop_size_mean
 
@@ -99,6 +99,14 @@ class RandomBBoxCropper(object):
         # update intrinsics
         if len(K.shape) == 2: # repeat original K (3,3) to (B, 3, 3)
             K = torch.tensor(repeat(K, 'd1 d2 -> n d1 d2', n=B))
+
+        # ! NOTE: if the batch of K is heterogeneous, then will need to change this part!
+        # ensure that crop doesn't create negative optical centers
+        # (need to recompute )
+        if torch.where(x1 > K[:, 0, 2]):
+            x1 = torch.clamp(x1, max=K[:, 0, 2])
+        if torch.where(y1 > K[:, 1, 2]):
+            y1 = torch.clamp(y1, max=K[:, 1, 2])
 
         K_new = update_intrinsics(
             torch.as_tensor(K), 
@@ -157,6 +165,7 @@ class RandomBBoxCropper(object):
         pad_bottom = torch.maximum(torch.zeros_like(y2), y2 - H)
         
         # if the new crop parameters extend beyond the image, pad the image
+        # ! should not pad "to the left" (negative optical center; positive OK)
         if torch.any(pad_left > 0) or torch.any(pad_top > 0) or torch.any(pad_right > 0) or torch.any(pad_bottom > 0):
             padding = [pad_left, pad_top, pad_right, pad_bottom]
             images = torch.nn.functional.pad(images, padding, mode="constant", value=0)

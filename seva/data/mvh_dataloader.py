@@ -107,7 +107,7 @@ class MVHumanNetDataset(Dataset):
         pre_scale=0.5,
         data_limit=None,
         only_include=None,
-        random_crop=True,
+        random_crop=False,
         white_background=False,
         step_size=1,
         load_autoencoder=False
@@ -374,16 +374,20 @@ class MVHumanNetDataset(Dataset):
             if Ks.dim() == 2: # if one shared intrinsic matrix, then repeat it for all
                 Ks = repeat(Ks, 'd1 d2 -> n d1 d2', n=self.num_images)
         else: # simply CenterCrop
-            crop_amount  = (self.image_shape[1] - self.target_shape[0]) // 2 # (W - H) // 2: assumes W > H
-            scale_amount = (self.target_shape[0] / self.image_shape[0])
+            # if CenterCrop, then crop original size image to square
+            min_dim = min(*self.image_shape)
+            max_dim = max(*self.image_shape)
+            crop_amount  = (max_dim - min_dim) // 2 # (W-H)/2, cropped from each side (only left-part relevant)
+            scale_amount = (self.target_shape[0] / min_dim)
             Ks = update_intrinsics(np.array(intrinsics), crop_x=crop_amount, crop_y=0, scale=scale_amount)
             Ks = normalize_intrinsics(Ks, self.target_shape[0], self.target_shape[1]) # normalize intrinsics (H,W)
             Ks = repeat(Ks, 'd1 d2 -> n d1 d2', n=self.num_images) # assumes all intrinsics are the same 
             Ks = torch.from_numpy(Ks).float()
 
         # NOTE: the behavior of transform will change depending on whether random crop is used
-        frames = [self.transform(frame) for frame in frames]
-        frames = torch.stack(frames, dim=0) # resize to 576x576 normalized [-1, 1] image tensorss
+        # frames = [self.transform(frame) for frame in frames]
+        frames = self.transform(frames)
+        # frames = torch.stack(frames, dim=0) # resize to 576x576 normalized [-1, 1] image tensorss
 
         # load latents if we provided a path
         if self.latents_dir is not None and os.path.exists(os.path.join(self.latents_dir, f"{subject_id}.npz")):
@@ -402,7 +406,6 @@ class MVHumanNetDataset(Dataset):
                     frames = frames.to("cpu") # back to CPU
             else:
                 raise ValueError("Need to call _init_autoencoder() to encode latents on the fly. Otherwise, precomputed latents are required.")
-
 
         w2cs = torch.linalg.inv(c2ws)
         pluckers = get_plucker_coordinates(

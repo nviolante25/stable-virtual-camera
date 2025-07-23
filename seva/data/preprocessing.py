@@ -85,11 +85,16 @@ def normalize_intrinsics(intrinsics, H, W):
     """
     Normalize intrinsics to a smaller scale while preserving their relative positions.
     """
-    intrinsics[:, 0, 0] = intrinsics[:, 0, 0] / W
-    intrinsics[:, 1, 1] = intrinsics[:, 1, 1] / H
-    intrinsics[:, 0, 2] = intrinsics[:, 0, 2] / W
-    intrinsics[:, 1, 2] = intrinsics[:, 1, 2] / H
-    return intrinsics
+    new_intrinsics = intrinsics.copy() if isinstance(intrinsics, np.ndarray) else intrinsics.clone().numpy()
+    if len(new_intrinsics.shape) == 2:
+        new_intrinsics = new_intrinsics[None, ...]
+    new_intrinsics[:, 0, 0] = new_intrinsics[:, 0, 0] / W
+    new_intrinsics[:, 1, 1] = new_intrinsics[:, 1, 1] / H
+    new_intrinsics[:, 0, 2] = new_intrinsics[:, 0, 2] / W
+    new_intrinsics[:, 1, 2] = new_intrinsics[:, 1, 2] / H
+    if len(intrinsics.shape) == 2:
+        new_intrinsics = new_intrinsics[0]
+    return new_intrinsics if isinstance(intrinsics, np.ndarray) else new_intrinsics
 
  
 def generate_gaussian_samples(mean, cov, n_samples=1000, device=None, dtype=None):
