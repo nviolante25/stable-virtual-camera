@@ -396,6 +396,8 @@ class MVHumanNetDataset(Dataset):
             latent_tensors = [npz_data[f"{sample_cam}.{timestep}"] for sample_cam in camera_order]
             clean_latents = torch.stack([torch.from_numpy(latent_tensor) for latent_tensor in latent_tensors]) # (B, 4, 72, 72)
         else: # encode frames on the fly
+            if self.init_autoencoder is None:
+                self.init_autoencoder() # use now
             if self._autoencoder is not None:
                 clean_latents = torch.zeros((self.num_images, 4, self.target_shape[0], self.target_shape[1]), device="cuda")
                 # this automatically applies the scale factor if using seva AE
@@ -463,3 +465,92 @@ class MVHumanNetDataset(Dataset):
             raise
 
         return output_dict
+
+
+class MVHumanNetLoader(pl.LightningDataModule):
+    def __init__(
+        self,
+        root_dir: str,
+        latents_dir: str,
+        num_images: int,
+        batch_size: int,
+        num_workers: int = 0,
+        shuffle: bool = True,
+        image_size: int = 576,
+        data_limit: int = None,
+        only_include: list = None,
+    ):
+        super().__init__()
+        
+        self.root_dir = root_dir
+        self.latents_dir = latents_dir
+        self.num_images = num_images
+        self.batch_size = batch_size
+        self.num_workers = num_workers
+        self.shuffle = shuffle
+        self.data_limit = data_limit
+        self.only_include = only_include
+        # Define transforms
+        # self.transform = T.Compose([
+        #     T.Resize(image_size), # whatever final resolution we want here
+        #     T.ToTensor(),
+        # ])
+        self.transform = None # let corresponding Dataset handle this
+
+    def setup(self, stage: Optional[str] = None):
+        if stage == "fit" or stage is None:
+            self.train_dataset = MVHumanNetDataset(
+                root_dir=os.path.join(self.root_dir),
+                latents_dir=os.path.join(self.latents_dir),
+                num_images=self.num_images,
+                transforms=self.transform,
+                data_limit=self.data_limit,
+                only_include=self.only_include
+            )
+
+            # self.val_dataset = MVHumanNetDataDictWrapper(
+            #     MVHumanNetDataset(
+            #         root_dir=os.path.join(self.root_dir, "val"),
+            #         transforms=self.transform
+            #     )
+            # )
+        if stage == "test" or stage is None:
+            self.test_dataset = MVHumanNetDataset(
+                root_dir=os.path.join(self.root_dir, "test"),
+                latents_dir=os.path.join(self.latents_dir),
+                num_images=self.num_images,
+                transforms=self.transform,
+                data_limit=self.data_limit,
+                only_include=self.only_include
+            )
+            
+
+    def prepare_data(self):
+        pass
+
+    def train_dataloader(self) -> DataLoader:
+        return DataLoader(
+            self.train_dataset,
+            batch_size=self.batch_size,
+            shuffle=self.shuffle,
+            num_workers=self.num_workers,
+            pin_memory=True
+        )
+
+    # def val_dataloader(self) -> DataLoader:
+    #     return DataLoader(
+    #         self.val_dataset,
+    #         batch_size=self.batch_size,
+    #         shuffle=False,
+    #         num_workers=self.num_workers,
+    #         pin_memory=True
+    #     )
+
+    def test_dataloader(self) -> DataLoader:
+        return DataLoader(
+            self.test_dataset,
+            batch_size=self.batch_size,
+            shuffle=False,
+            num_workers=self.num_workers,
+            pin_memory=True
+        )
