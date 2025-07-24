@@ -109,8 +109,7 @@ class MVHumanNetDataset(Dataset):
         only_include=None,
         random_crop=False,
         white_background=False,
-        step_size=1,
-        load_autoencoder=False
+        step_size=20,
     ):
         self.root_dir = root_dir             # directory of all subject directories
         self.latents_dir = latents_dir       # directory of all latents
@@ -125,9 +124,6 @@ class MVHumanNetDataset(Dataset):
                                              # ! (human-centered 576x576 image crop) 
         self.adjacent_frame_sampling_prob = 0.2 # Trajectory NVS acceptance rate
         self.white_background = white_background
-        self._autoencoder = None
-        if load_autoencoder:
-            self.init_autoencoder()
         if num_images >= 16: # LIMIT to 16 images
             self.num_images = 16
 
@@ -162,6 +158,7 @@ class MVHumanNetDataset(Dataset):
 
         if self.pre_scale != 0.5:
             print("WARNING: pre_scale is not 0.5, which is expected for MVHumanNet!")
+        print("MVHN::init done!")
 
 
     def _clean_camera_keys(self, data):
@@ -172,9 +169,6 @@ class MVHumanNetDataset(Dataset):
             camera_id = key[2:-4] # remove "1_" and ".png" from camera_extrinsics.json
             cleaned_data[camera_id] = value
         return cleaned_data
-
-    def init_autoencoder(self):
-        self._autoencoder = AutoEncoder().eval().to("cuda")
 
     def _load_scenes(self):
         """
@@ -187,7 +181,12 @@ class MVHumanNetDataset(Dataset):
         (Implicitly also updates self.cam_params)
         """
         scenes = []
-        for i, subject in enumerate(os.listdir(self.root_dir)):
+        valid_latent_scenes = [
+            subject for subject in os.listdir(self.latents_dir)
+            if subject in os.listdir(self.root_dir)
+        ]
+        for i, subject in enumerate(valid_latent_scenes):
+            print("MVHN::loading subject: ", subject)
             if self.data_limit is not None and i >= self.data_limit:
                 break
             subject_path = os.path.join(self.root_dir, subject)  
@@ -220,14 +219,15 @@ class MVHumanNetDataset(Dataset):
             masks_path = os.path.join(subject_path, 'fmask_lr')
 
             # NOTE: assumes the same cameras exist for each subject
-            camera_dirs = [d for d in os.listdir(masks_path) if os.path.isdir(os.path.join(masks_path, d))]
+            camera_dirs = [d for d in os.listdir(masks_path)]
 
             # Get first directory (to get number of timesteps)
             first_dir = camera_dirs[0]
             first_dir_path = os.path.join(masks_path, first_dir)
             timesteps = len([f for f in os.listdir(first_dir_path)])
 
-            for i in range(1, timesteps + 1):
+            for i in range(1, timesteps + 1, self.step_size): # step size (20 timesteps)
+                print("MVHN::loading timestep: ", i)
                 # for each timestep, record all camera views (48)
                 timestep = f"{i * 5:04d}"
                 frames = {}
@@ -235,7 +235,7 @@ class MVHumanNetDataset(Dataset):
                     image_path = os.path.join(images_path, camera, f"{timestep}_img.jpg")
                     mask_path = os.path.join(masks_path, camera, f"{timestep}_img_fmask.png")
                     annots_path = os.path.join(annots_path, camera, f"{timestep}_img.json")
-                    if not os.path.exists(image_path) or not os.path.exists(mask_path):
+                    if not os.path.exists(image_path):
                         continue # skip if doesn't exist
                     frame = {
                         camera : {
@@ -251,13 +251,14 @@ class MVHumanNetDataset(Dataset):
                     'frames_info': frames,  # dict of {camera: image data}
                     'timestep': timestep
                 })
-                
+        print("MVHN::loaded scenes!")
         return scenes
 
     def __len__(self):
         return len(self.scenes)
     
     def __getitem__(self, idx):
+        print("MVHN::getitem")
         scene = self.scenes[idx]
         subject_id = scene['subject_id'] # ex. 100001
         timestep = scene['timestep'] # ex. 0005
@@ -390,24 +391,15 @@ class MVHumanNetDataset(Dataset):
         # frames = torch.stack(frames, dim=0) # resize to 576x576 normalized [-1, 1] image tensorss
 
         # load latents if we provided a path
-        if self.latents_dir is not None and os.path.exists(os.path.join(self.latents_dir, f"{subject_id}.npz")):
-            npz_file = os.path.join(self.latents_dir, f"{subject_id}.npz")
+        if self.latents_dir is not None and os.path.exists(os.path.join(self.latents_dir, subject_id, f"{subject_id}.npz")):
+            npz_file = os.path.join(self.latents_dir, subject_id, f"{subject_id}.npz")
             npz_data = np.load(npz_file) # this is already for the current subject
             latent_tensors = [npz_data[f"{sample_cam}.{timestep}"] for sample_cam in camera_order]
             clean_latents = torch.stack([torch.from_numpy(latent_tensor) for latent_tensor in latent_tensors]) # (B, 4, 72, 72)
-        else: # encode frames on the fly
-            if self.init_autoencoder is None:
-                self.init_autoencoder() # use now
-            if self._autoencoder is not None:
-                clean_latents = torch.zeros((self.num_images, 4, self.target_shape[0], self.target_shape[1]), device="cuda")
-                # this automatically applies the scale factor if using seva AE
-                # ! - HACK: reset the scale factor applied within the seva AE
-                with torch.no_grad():
-                    frames = frames.to("cuda")
-                    clean_latents = (self._autoencoder.encode(frames, chunk_size=1) / self.scale_factor).to("cpu")
-                    frames = frames.to("cpu") # back to CPU
-            else:
-                raise ValueError("Need to call _init_autoencoder() to encode latents on the fly. Otherwise, precomputed latents are required.")
+        else: # encode frames on the fly (DO NOT DO THIS IN DATASET)
+            print("if no precomputed latents, then we need to 'tag' the batch saying that it needs to be encoded during the training loop instead!")
+            clean_latents = torch.zeros((self.num_images, 4, self.target_shape[0], self.target_shape[1]))
+            # TODO LATER: tag batch to indicate latents need to be computed
 
         w2cs = torch.linalg.inv(c2ws)
         pluckers = get_plucker_coordinates(
@@ -481,7 +473,7 @@ class MVHumanNetLoader(pl.LightningDataModule):
         only_include: list = None,
     ):
         super().__init__()
-        
+        print("init of DATALOADER")
         self.root_dir = root_dir
         self.latents_dir = latents_dir
         self.num_images = num_images
@@ -498,7 +490,10 @@ class MVHumanNetLoader(pl.LightningDataModule):
         self.transform = None # let corresponding Dataset handle this
 
     def setup(self, stage: Optional[str] = None):
+        print("setup of DATALOADER")
+        print("stage: ", stage)
         if stage == "fit" or stage is None:
+            print("train is reached")
             self.train_dataset = MVHumanNetDataset(
                 root_dir=os.path.join(self.root_dir),
                 latents_dir=os.path.join(self.latents_dir),
@@ -507,6 +502,7 @@ class MVHumanNetLoader(pl.LightningDataModule):
                 data_limit=self.data_limit,
                 only_include=self.only_include
             )
+            print("train_dataset loaded")
 
             # self.val_dataset = MVHumanNetDataDictWrapper(
             #     MVHumanNetDataset(
@@ -529,6 +525,7 @@ class MVHumanNetLoader(pl.LightningDataModule):
         pass
 
     def train_dataloader(self) -> DataLoader:
+        print("dataloader train_dataloader")
         return DataLoader(
             self.train_dataset,
             batch_size=self.batch_size,
