@@ -1,1 +1,1 @@
-python main.py --base configs/example_training/seva-true.yaml --wandb --projectname seva-on-dl3dv --no-test
+python main.py --base configs/example_training/seva-true.yaml --wandb --projectname seva-on-dl3dv --no-test --logdir /workspace/leovol/logs

@@ -471,6 +471,7 @@ class MVHumanNetLoader(pl.LightningDataModule):
         image_size: int = 576,
         data_limit: int = None,
         only_include: list = None,
+        step_size: int = 150,
     ):
         super().__init__()
         print("init of DATALOADER")
@@ -482,6 +483,7 @@ class MVHumanNetLoader(pl.LightningDataModule):
         self.shuffle = shuffle
         self.data_limit = data_limit
         self.only_include = only_include
+        self.step_size = step_size
         # Define transforms
         # self.transform = T.Compose([
         #     T.Resize(image_size), # whatever final resolution we want here
@@ -500,7 +502,8 @@ class MVHumanNetLoader(pl.LightningDataModule):
                 num_images=self.num_images,
                 transforms=self.transform,
                 data_limit=self.data_limit,
-                only_include=self.only_include
+                only_include=self.only_include,
+                step_size=self.step_size
             )
             print("train_dataset loaded")
 
@@ -517,7 +520,8 @@ class MVHumanNetLoader(pl.LightningDataModule):
                 num_images=self.num_images,
                 transforms=self.transform,
                 data_limit=self.data_limit,
-                only_include=self.only_include
+                only_include=self.only_include,
+                step_size=self.step_size
             )
             
 
