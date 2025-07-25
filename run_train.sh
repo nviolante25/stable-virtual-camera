@@ -1,1 +1,2 @@
-python main.py --base configs/example_training/seva-true.yaml --wandb --projectname seva-on-dl3dv --no-test --logdir /workspace/leovol/logs
+export NCCL_SOCKET_IFNAME=lo
+python main.py --base configs/example_training/seva-true.yaml --wandb --projectname seva-on-mvhsamples --no-test

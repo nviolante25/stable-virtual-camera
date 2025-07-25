@@ -193,6 +193,12 @@ def get_parser(**parser_kwargs):
         default=False,  # TODO: later default to True
         help="log to wandb",
     )
+    parser.add_argument(
+        "--devices",
+        type=str,
+        default=None,
+        help="Override devices from config (comma-separated, e.g., '0,1,2,3')",
+    )
     if version.parse(torch.__version__) >= version.parse("2.0.0"):
         parser.add_argument(
             "--resume_from_checkpoint",
@@ -987,6 +993,11 @@ if __name__ == "__main__":
         print("ckpt_resume_path: ", ckpt_resume_path)
         print("trainer_config: ", trainer_config)
 
+        # Override devices from command line if provided
+        if opt.devices is not None:
+            trainer_config["devices"] = opt.devices
+            print(f"Overriding devices from command line: {opt.devices}")
+        
         if not "devices" in trainer_config and trainer_config["accelerator"] != "gpu":
             del trainer_config["accelerator"]
             cpu = True
@@ -995,6 +1006,7 @@ if __name__ == "__main__":
             print(f"Running on GPUs {gpuinfo}")
             gpuinfo = [gpuinfo] # ! - CUDA Accelerate wants this as a list; if not using, comment this out
             cpu = False
+
         trainer_opt = argparse.Namespace(**trainer_config)
         lightning_config.trainer = trainer_config
 
