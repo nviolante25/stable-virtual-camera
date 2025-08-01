@@ -2,6 +2,7 @@ import os
 import json
 import pickle
 import glob
+from collections import defaultdict
 from einops import rearrange, repeat 
 from tqdm import tqdm
 from typing import Tuple, Optional, Dict, Union, Callable
@@ -185,7 +186,7 @@ class MVHumanNetDataset(Dataset):
             subject for subject in os.listdir(self.latents_dir)
             if subject in os.listdir(self.root_dir)
         ]
-        for i, subject in enumerate(valid_latent_scenes):
+        for i, subject in tqdm(enumerate(valid_latent_scenes), total=len(valid_latent_scenes), desc="Loading scenes"):
             print("MVHN::loading subject: ", subject)
             if self.data_limit is not None and i >= self.data_limit:
                 break
@@ -220,37 +221,66 @@ class MVHumanNetDataset(Dataset):
 
             # NOTE: assumes the same cameras exist for each subject
             camera_dirs = [d for d in os.listdir(masks_path)]
+            subject_map = defaultdict(dict)
 
-            # Get first directory (to get number of timesteps)
-            first_dir = camera_dirs[0]
-            first_dir_path = os.path.join(masks_path, first_dir)
-            timesteps = len([f for f in os.listdir(first_dir_path)])
+            for camera in camera_dirs:
+                cam_path = os.path.join(images_path, camera)
 
-            for i in range(1, timesteps + 1, self.step_size): # step size (20 timesteps)
-                print("MVHN::loading timestep: ", i)
-                # for each timestep, record all camera views (48)
-                timestep = f"{i * 5:04d}"
-                frames = {}
-                for camera in camera_dirs:
-                    image_path = os.path.join(images_path, camera, f"{timestep}_img.jpg")
-                    mask_path = os.path.join(masks_path, camera, f"{timestep}_img_fmask.png")
-                    annots_path = os.path.join(annots_path, camera, f"{timestep}_img.json")
-                    if not os.path.exists(image_path):
-                        continue # skip if doesn't exist
-                    frame = {
-                        camera : {
-                            'image_path': image_path,
-                            'mask_path': mask_path,
-                            'annots_path': annots_path
-                        }
-                    }
-                    frames.update(frame)
+                try:
+                    for entry in os.scandir(cam_path):
+                        if entry.is_file() and entry.name.endswith('_img.jpg'):
+                            timestep = entry.name.split('_')[0]
+                            subject_map[timestep][camera] = {
+                                'image_path': entry.path,
+                                'mask_path': os.path.join(masks_path, camera, f"{timestep}_img_fmask.png"),
+                                'annots_path': os.path.join(annots_path, camera, f"{timestep}_img.json")
+                            }
+                except Exception as e:
+                    print(f"Error loading subject {subject} camera {camera}: {e}")
+                    continue
+            
+            sorted_timesteps = sorted(subject_map.keys())
+            for i in range(0, len(sorted_timesteps), self.step_size):
+                timestep = sorted_timesteps[i]
+                frames_info = subject_map[timestep]
 
                 scenes.append({
-                    'subject_id': subject, # string ID
-                    'frames_info': frames,  # dict of {camera: image data}
+                    'subject_id': subject,
+                    'frames_info': frames_info,
                     'timestep': timestep
                 })
+
+            # ! OLD: bring back if performance of new isn't good enough!
+            # Get first directory (to get number of timesteps)
+            # # first_dir = camera_dirs[0]
+            # # first_dir_path = os.path.join(masks_path, first_dir)
+            # # timesteps = len([f for f in os.listdir(first_dir_path)])
+
+            # # for i in range(1, timesteps + 1, self.step_size): # step size (20 timesteps)
+            # #     print("MVHN::loading timestep: ", i)
+            # #     # for each timestep, record all camera views (48)
+            # #     timestep = f"{i * 5:04d}"
+            # #     frames = {}
+            # #     for camera in camera_dirs:
+            # #         image_path = os.path.join(images_path, camera, f"{timestep}_img.jpg")
+            # #         mask_path = os.path.join(masks_path, camera, f"{timestep}_img_fmask.png")
+            # #         annots_path = os.path.join(annots_path, camera, f"{timestep}_img.json")
+            # #         if not os.path.exists(image_path):
+            # #             continue # skip if doesn't exist
+            # #         frame = {
+            # #             camera : {
+            # #                 'image_path': image_path,
+            # #                 'mask_path': mask_path,
+            # #                 'annots_path': annots_path
+            # #             }
+            # #         }
+            # #         frames.update(frame)
+
+            #     scenes.append({
+            #         'subject_id': subject, # string ID
+            #         'frames_info': frames,  # dict of {camera: image data}
+            #         'timestep': timestep
+            #     })
         print("MVHN::loaded scenes!")
         return scenes
 
