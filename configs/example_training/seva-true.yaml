@@ -10,9 +10,9 @@ model:
     scheduler_config:
       target: sgm.lr_scheduler.LambdaLinearScheduler
       params:
-        warm_up_steps: [10000]
+        warm_up_steps: [1]
         cycle_lengths: [10000000000000]
-        f_start: [1.e-4]
+        f_start: [1.]
         f_max: [1.]
         f_min: [1.]
 
@@ -126,15 +126,15 @@ model:
 data:
   target: seva.data.mvh_dataloader.MVHumanNetLoader
   params:
-    root_dir: /workspace/datasetvol/mvhuman_data/mv_captures
-    latents_dir: /workspace/datasetvol/mvhuman_data/mv_latents
-    # dataset_dir: /home/stone/dev/datasets/dl3dv_samples/dl3dv-480P-new/
+    # root_dir: /workspace/datasetvol/mvhuman_data/mv_captures
+    # latents_dir: /workspace/datasetvol/mvhuman_data/mv_latents
+    root_dir: /home/stone/dev/datasets/mvhumannet_samples/mv_captures
     # colmap_dir: /home/stone/dev/datasets/dl3dv_samples/dl3dv-colmap-new/
-    # latents_dir: /home/stone/dev/datasets/dl3dv_samples/dl3dv-latents/
+    latents_dir: /home/stone/dev/datasets/mvhumannet_samples/mv_latents
     batch_size: 2
     num_workers: 16
     num_images: 8
-    step_size: 210
+    step_size: 100
 # data:
 #   target: sgm.data.dataset.DL3DVDataModuleFromConfig
 #   params:
@@ -163,7 +163,7 @@ lightning:
       params:
         disabled: False
         enable_autocast: False
-        batch_frequency: 100
+        batch_frequency: 1000
         max_images: 8
         increase_log_steps: True
         log_first_step: False
@@ -177,4 +177,4 @@ lightning:
     benchmark: False
     num_sanity_val_steps: 0
     accumulate_grad_batches: 1
-    max_epochs: 2000
+    max_epochs: 10000

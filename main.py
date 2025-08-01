@@ -194,7 +194,7 @@ def get_parser(**parser_kwargs):
         help="log to wandb",
     )
     parser.add_argument(
-        "--devices",
+        "--override_ngpu",
         type=str,
         default=None,
         help="Override devices from config (comma-separated, e.g., '0,1,2,3')",
@@ -994,9 +994,9 @@ if __name__ == "__main__":
         print("trainer_config: ", trainer_config)
 
         # Override devices from command line if provided
-        if opt.devices is not None:
-            trainer_config["devices"] = opt.devices
-            print(f"Overriding devices from command line: {opt.devices}")
+        if opt.override_ngpu is not None:
+            trainer_config["devices"] = opt.override_ngpu
+            print(f"Overriding devices from command line: {opt.override_ngpu}")
         
         if not "devices" in trainer_config and trainer_config["accelerator"] != "gpu":
             del trainer_config["accelerator"]
