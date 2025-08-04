@@ -111,6 +111,7 @@ class MVHumanNetDataset(Dataset):
         random_crop=False,
         white_background=False,
         step_size=20,
+        preload_path=None,
     ):
         self.root_dir = root_dir             # directory of all subject directories
         self.latents_dir = latents_dir       # directory of all latents
@@ -125,12 +126,13 @@ class MVHumanNetDataset(Dataset):
                                              # ! (human-centered 576x576 image crop) 
         self.adjacent_frame_sampling_prob = 0.2 # Trajectory NVS acceptance rate
         self.white_background = white_background
+        self.preload_path = preload_path
         if num_images >= 16: # LIMIT to 16 images
             self.num_images = 16
 
         # actual data
         self.cam_params = {} # Dict[subject: (extrinsics, intrinsics, camera_scale)]
-        self.scenes = self._load_scenes()
+        self.scenes = self._load_scenes() if preload_path is None else self._load_preloaded_filepaths()
         self.image_shape = (1500, 2048) # MVHumanNet images are 2048x1500
 
         # from SD 2.1 VAE
@@ -171,14 +173,103 @@ class MVHumanNetDataset(Dataset):
             cleaned_data[camera_id] = value
         return cleaned_data
 
+    def _load_preloaded_filepaths(self):
+        """
+        Load preloaded filepaths from a custom json file structured as:
+        WARNING: relies on accurate priors that all subjects have the exact same structure!
+        {
+            "subject_id": {
+                "timesteps": <int: number of timesteps within first camera> (or list)
+                "cameras": <list: all camera IDs> (validated prior)
+                "extrinsics": <dict: camera extrinsics>
+                "intrinsics": <list: camera intrinsics>
+                "camera_scale": <float: camera scale>
+                "annots": {"bbox": <list: bbox coords.>, "bbox_face": <list: face bbox coords.>}
+            }
+        }
+        The above structure gives all that we need to load the filepaths (reducing metadata reads by a lot!)
+        """
+        assert self.preload_path is not None, "Preload path must be provided!"
+        preload_path = self.preload_path
+        subjects = load_json(preload_path) # preloaded subject data
+        scenes = []
+
+        # for each subject (key) in the preloaded data:
+        for i, subject in tqdm(enumerate(subjects), total=len(subjects), desc="Loading scenes"):
+            if subject == "metadata":
+                continue
+            subject_path = os.path.join(self.root_dir, subject)
+            if self.only_include is not None and subject not in self.only_include:
+                continue
+            if self.data_limit is not None and i >= self.data_limit:
+                break
+
+            extrinsics = subjects[subject]['extrinsics'] # should be pre-cleaned!
+            intrinsics = subjects[subject]['intrinsics']['intrinsics']
+            camera_scale = subjects[subject]['camera_scale']
+            annots = subjects[subject]['annots']
+
+            # for each subject, store camera parameters separately
+            # ! NOTE: intrinsics need to be downscaled by 2 later!
+            # ! AND extrinsics [t] needs to be scaled by camera_scale later!
+            self.cam_params[subject] = {
+                'extrinsics': extrinsics, # Dict[camera_id: extrinsic params]
+                'intrinsics': intrinsics, # List[List] (turn to matrix)
+                'camera_scale': camera_scale # float
+            }
+
+            # get image, mask, annots
+            num_timesteps = subjects[subject]['timesteps'] # usually int, but this may be a LIST!
+            # ensure only camera dirs were captured
+            cameras = [cam for cam in subjects[subject]['cameras'] if cam in annots['bbox']]
+            step_size = subjects["metadata"]["step_size"]
+            subject_map = defaultdict(dict)
+
+            # build frames_info for each camera, timestep combination
+            # store each into scenes
+            iterator = range(1, num_timesteps, step_size) if isinstance(num_timesteps, int) else num_timesteps
+            is_list_type = isinstance(num_timesteps, list)
+            for camera in cameras:
+                for timestep in iterator:
+                    time_id = timestep if is_list_type else f"{timestep * 5:04d}"
+                    image_path = os.path.join(subject_path, "images_lr", camera, f"{time_id}_img.jpg")
+                    mask_path = os.path.join(subject_path, "fmask_lr", camera, f"{time_id}_img_fmask.png")
+                    # annots_path = os.path.join(subject_path, "annots", camera, f"{time_id}_img.json")
+
+                    subject_map[time_id][camera] = {
+                                'image_path': image_path,
+                                'mask_path': mask_path,
+                                'annots': {
+                                    'bbox': annots['bbox'][camera][time_id],
+                                    'bbox_face': annots['bbox_face'][camera][time_id]
+                                }
+                            }
+
+            sorted_timesteps = sorted(subject_map.keys())
+            for i in range(0, len(sorted_timesteps), step_size):
+                timestep = sorted_timesteps[i]
+                frames_info = subject_map[timestep]
+                scenes.append({
+                    'subject_id': subject,
+                    'frames_info': frames_info,
+                    'timestep': timestep
+                })
+
+        return scenes
+
+
     def _load_scenes(self):
         """
+        NEW -- compact loading using priors:
+        - all subjects are continuous between timesteps (no gaps)
+        - all subjects have the same cameras
+        - all subjects have the same number of timesteps
+        - 
         For each subject in MVHumanNet, load dict:
         - frames_info: list of dicts, each with keys:
             - image_path
             - mask_path
-            - annots_path
-        - subject_id
+            - annots (bbox, bbox_face)
         (Implicitly also updates self.cam_params)
         """
         scenes = []
@@ -187,7 +278,6 @@ class MVHumanNetDataset(Dataset):
             if subject in os.listdir(self.root_dir)
         ]
         for i, subject in tqdm(enumerate(valid_latent_scenes), total=len(valid_latent_scenes), desc="Loading scenes"):
-            print("MVHN::loading subject: ", subject)
             if self.data_limit is not None and i >= self.data_limit:
                 break
             subject_path = os.path.join(self.root_dir, subject)  
@@ -230,10 +320,16 @@ class MVHumanNetDataset(Dataset):
                     for entry in os.scandir(cam_path):
                         if entry.is_file() and entry.name.endswith('_img.jpg'):
                             timestep = entry.name.split('_')[0]
+                            annots_json = load_json(os.path.join(annots_path, camera, f"{timestep}_img.json"))['annots'][0]
+                            bbox = annots_json['bbox']
+                            bbox_face = annots_json['bbox_face2d']
                             subject_map[timestep][camera] = {
                                 'image_path': entry.path,
                                 'mask_path': os.path.join(masks_path, camera, f"{timestep}_img_fmask.png"),
-                                'annots_path': os.path.join(annots_path, camera, f"{timestep}_img.json")
+                                'annots': {
+                                    'bbox': bbox,
+                                    'bbox_face': bbox_face
+                                }
                             }
                 except Exception as e:
                     print(f"Error loading subject {subject} camera {camera}: {e}")
@@ -249,46 +345,12 @@ class MVHumanNetDataset(Dataset):
                     'frames_info': frames_info,
                     'timestep': timestep
                 })
-
-            # ! OLD: bring back if performance of new isn't good enough!
-            # Get first directory (to get number of timesteps)
-            # # first_dir = camera_dirs[0]
-            # # first_dir_path = os.path.join(masks_path, first_dir)
-            # # timesteps = len([f for f in os.listdir(first_dir_path)])
-
-            # # for i in range(1, timesteps + 1, self.step_size): # step size (20 timesteps)
-            # #     print("MVHN::loading timestep: ", i)
-            # #     # for each timestep, record all camera views (48)
-            # #     timestep = f"{i * 5:04d}"
-            # #     frames = {}
-            # #     for camera in camera_dirs:
-            # #         image_path = os.path.join(images_path, camera, f"{timestep}_img.jpg")
-            # #         mask_path = os.path.join(masks_path, camera, f"{timestep}_img_fmask.png")
-            # #         annots_path = os.path.join(annots_path, camera, f"{timestep}_img.json")
-            # #         if not os.path.exists(image_path):
-            # #             continue # skip if doesn't exist
-            # #         frame = {
-            # #             camera : {
-            # #                 'image_path': image_path,
-            # #                 'mask_path': mask_path,
-            # #                 'annots_path': annots_path
-            # #             }
-            # #         }
-            # #         frames.update(frame)
-
-            #     scenes.append({
-            #         'subject_id': subject, # string ID
-            #         'frames_info': frames,  # dict of {camera: image data}
-            #         'timestep': timestep
-            #     })
-        print("MVHN::loaded scenes!")
         return scenes
 
     def __len__(self):
         return len(self.scenes)
     
     def __getitem__(self, idx):
-        print("MVHN::getitem")
         scene = self.scenes[idx]
         subject_id = scene['subject_id'] # ex. 100001
         timestep = scene['timestep'] # ex. 0005
@@ -380,19 +442,21 @@ class MVHumanNetDataset(Dataset):
         # NOTE: for preliminary fine-tune testing, we currently account for the uniform center crop
 
         if self.random_crop:
+            # TODO - remove crop_params.npz, just use the annots bbox for square crop (good enough)
             # get random crop parameters for the subject
             # if crop_params.npz exists, use it
             crop_params_path = os.path.join(subject_path, "crop_params.npz")
             if os.path.exists(crop_params_path):
+                print("crop_params.npz exists")
                 crop_params = np.load(crop_params_path)
                 crop_params = [crop_params[f"{cam}.{timestep}"] for cam in camera_order]
                 crop_params = torch.stack([torch.from_numpy(bbox) for bbox in crop_params]) # (B, 4)
             else: # use 'annots' instead (less accurate bbox)
-                annots_jsons = [frames_info[cam]['annots_path'] for cam in camera_order]
+                print("crop_params.npz does not exist")
+                annots_jsons = [frames_info["annots"][cam] for cam in camera_order]
                 crop_params = []
                 for annots_json in annots_jsons:
-                    annots = load_json(annots_json)
-                    bbox = annots['annots'][0]['bbox'][:4]
+                    bbox = annots_json['bbox'][:4]
                     crop_params.append(bbox)
                 crop_params = torch.stack([torch.from_numpy(bbox) for bbox in crop_params])
 
@@ -402,8 +466,9 @@ class MVHumanNetDataset(Dataset):
             Ks = update_intrinsics_resize(Ks, scale)
             # ! PROBLEM: from crop, optical center can be negative, in which this does NOT work!
             Ks = normalize_intrinsics(Ks, self.target_shape[0], self.target_shape[1]) # normalize intrinsics (H,W)
-            if Ks.dim() == 2: # if one shared intrinsic matrix, then repeat it for all
+            if len(Ks.shape) == 2: # if one shared intrinsic matrix, then repeat it for all
                 Ks = repeat(Ks, 'd1 d2 -> n d1 d2', n=self.num_images)
+            Ks = torch.from_numpy(Ks).float()
         else: # simply CenterCrop
             # if CenterCrop, then crop original size image to square
             min_dim = min(*self.image_shape)

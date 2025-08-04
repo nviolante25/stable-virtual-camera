@@ -48,7 +48,6 @@ class RandomBBoxCropper(object):
         B = bbox.shape[0] # batch size
 
         # random params
-        print("orig bbox:", bbox)
 
         # get initial bbox params
         center, size = get_bbox_center_and_size(bbox)
@@ -68,9 +67,6 @@ class RandomBBoxCropper(object):
         center_std     = torch.as_tensor(center_std)
         crop_size_mean = percent_to_absolute(crop_size_mean, torch.tensor([min(H, W)]))
         crop_size_std  = torch.as_tensor(crop_size_std)
-
-        print("samples:")
-        print(center_mean, center_std, crop_size_mean, crop_size_std)
 
         # * sample new center and length of crop
         center_sample = torch.randn(B, 2) * center_std    + center_mean
@@ -194,7 +190,7 @@ class RandomBBoxCropper(object):
         batch_size = images_.shape[0]
         cropped_images = []
         for i in range(batch_size):
-            cropped_img = images_[i, :, y1[i]:y2[i], x1[i]:x2[i]]
+            cropped_img = images_[i, :, int(y1[i]):int(y2[i]), int(x1[i]):int(x2[i])]
             cropped_images.append(cropped_img)
 
         return cropped_images, K_new
