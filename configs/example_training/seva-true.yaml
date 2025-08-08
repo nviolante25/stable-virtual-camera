@@ -133,7 +133,7 @@ data:
     # latents_dir: /home/stone/dev/datasets/mvhumannet_samples/mv_latents
     batch_size: 2
     num_workers: 16
-    num_images: 8
+    num_images: 9
     step_size: 100
     preload_path: /workspace/datasetvol/mvhuman_data/mv_captures/preloaded_filepaths.json
 # data:
@@ -166,7 +166,7 @@ lightning:
         enable_autocast: False
         batch_frequency: 1000
         max_images: 8
-        increase_log_steps: True
+        increase_log_steps: False
         log_first_step: False
         log_images_kwargs:
           use_ema_scope: False
