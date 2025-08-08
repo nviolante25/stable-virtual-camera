@@ -190,11 +190,12 @@ class MVHumanNetDataset(Dataset):
         The above structure gives all that we need to load the filepaths (reducing metadata reads by a lot!)
         """
         assert self.preload_path is not None, "Preload path must be provided!"
+        print("Loading preloaded filepaths...")
         preload_path = self.preload_path
         subjects = load_json(preload_path) # preloaded subject data
         scenes = []
 
-        # for each subject (key) in the preloaded data:
+        # for each subject (key) in the preloaded data (should be of available latents and metadata):
         for i, subject in tqdm(enumerate(subjects), total=len(subjects), desc="Loading scenes"):
             if subject == "metadata":
                 continue
@@ -228,6 +229,7 @@ class MVHumanNetDataset(Dataset):
             # build frames_info for each camera, timestep combination
             # store each into scenes
             iterator = range(1, num_timesteps, step_size) if isinstance(num_timesteps, int) else num_timesteps
+            print(f"subject: {subject}, num_timesteps: {num_timesteps}")
             is_list_type = isinstance(num_timesteps, list)
             for camera in cameras:
                 for timestep in iterator:
@@ -241,7 +243,7 @@ class MVHumanNetDataset(Dataset):
                                 'mask_path': mask_path,
                                 'annots': {
                                     'bbox': annots['bbox'][camera][time_id],
-                                    'bbox_face': annots['bbox_face'][camera][time_id]
+                                    'bbox_face': annots['bbox_face2d'][camera][time_id]
                                 }
                             }
 
@@ -254,7 +256,7 @@ class MVHumanNetDataset(Dataset):
                     'frames_info': frames_info,
                     'timestep': timestep
                 })
-
+        print("Loading preloaded filepaths completed!")
         return scenes
 
 
@@ -567,6 +569,7 @@ class MVHumanNetLoader(pl.LightningDataModule):
         data_limit: int = None,
         only_include: list = None,
         step_size: int = 150,
+        preload_path: str = None,
     ):
         super().__init__()
         print("init of DATALOADER")
@@ -579,6 +582,7 @@ class MVHumanNetLoader(pl.LightningDataModule):
         self.data_limit = data_limit
         self.only_include = only_include
         self.step_size = step_size
+        self.preload_path = preload_path
         # Define transforms
         # self.transform = T.Compose([
         #     T.Resize(image_size), # whatever final resolution we want here
@@ -598,7 +602,8 @@ class MVHumanNetLoader(pl.LightningDataModule):
                 transforms=self.transform,
                 data_limit=self.data_limit,
                 only_include=self.only_include,
-                step_size=self.step_size
+                step_size=self.step_size,
+                preload_path=self.preload_path
             )
             print("train_dataset loaded")
 
@@ -616,7 +621,8 @@ class MVHumanNetLoader(pl.LightningDataModule):
                 transforms=self.transform,
                 data_limit=self.data_limit,
                 only_include=self.only_include,
-                step_size=self.step_size
+                step_size=self.step_size,
+                preload_path=self.preload_path
             )
             
 

@@ -126,15 +126,16 @@ model:
 data:
   target: seva.data.mvh_dataloader.MVHumanNetLoader
   params:
-    # root_dir: /workspace/datasetvol/mvhuman_data/mv_captures
-    # latents_dir: /workspace/datasetvol/mvhuman_data/mv_latents
-    root_dir: /home/stone/dev/datasets/mvhumannet_samples/mv_captures
+    root_dir: /workspace/datasetvol/mvhuman_data/mv_captures
+    latents_dir: /workspace/datasetvol/mvhuman_data/mv_latents
+    # root_dir: /home/stone/dev/datasets/mvhumannet_samples/mv_captures
     # colmap_dir: /home/stone/dev/datasets/dl3dv_samples/dl3dv-colmap-new/
-    latents_dir: /home/stone/dev/datasets/mvhumannet_samples/mv_latents
+    # latents_dir: /home/stone/dev/datasets/mvhumannet_samples/mv_latents
     batch_size: 2
     num_workers: 16
     num_images: 8
     step_size: 100
+    preload_path: /workspace/datasetvol/mvhuman_data/mv_captures/preloaded_filepaths.json
 # data:
 #   target: sgm.data.dataset.DL3DVDataModuleFromConfig
 #   params:
@@ -173,7 +174,7 @@ lightning:
           n_rows: 2
 
   trainer:
-    devices: 0,
+    devices: 0,1,
     benchmark: False
     num_sanity_val_steps: 0
     accumulate_grad_batches: 1
