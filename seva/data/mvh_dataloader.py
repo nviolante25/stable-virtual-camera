@@ -375,6 +375,7 @@ class MVHumanNetDataset(Dataset):
         timestep = scene['timestep'] # ex. 0005
         frames_info = dict(sorted(scene['frames_info'].items())) # camera dict
         subject_path = os.path.join(self.root_dir, subject_id)
+        print(f"subject id: {subject_id}, timestep: {timestep}")
 
         # get camera parameters
         extrinsics = self.cam_params[subject_id]['extrinsics']
