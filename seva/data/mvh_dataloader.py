@@ -350,6 +350,9 @@ class MVHumanNetDataset(Dataset):
                 timestep = sorted_timesteps[i]
                 frames_info = subject_map[timestep]
 
+                if len(frames_info.keys()) < self.num_images: # not enough cameras for this timestep to sample
+                    continue # then skip this timestep
+
                 scenes.append({
                     'subject_id': subject,
                     'frames_info': frames_info,
