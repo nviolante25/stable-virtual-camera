@@ -208,7 +208,7 @@ class MVHumanNetDataset(Dataset):
             if self.data_limit is not None and i >= self.data_limit:
                 break
             if subject not in subjects_with_latents:
-                continue # if no latents precomputed, then skip this
+                continue # if no latents precomputed for this subject, then skip this
 
             extrinsics = subjects[subject]['extrinsics'] # should be pre-cleaned!
             intrinsics = subjects[subject]['intrinsics']['intrinsics']
@@ -231,13 +231,13 @@ class MVHumanNetDataset(Dataset):
             step_size = subjects["metadata"]["step_size"]
             subject_map = defaultdict(dict)
 
-            # build frames_info for each camera, timestep combination
-            # store each into scenes
+            # build frames_info for each timestep, camera combination
+            # NOTE: num_timesteps is based on the FIRST camera; some subjects have differing numbers of timesteps for their cameras!
             iterator = range(1, num_timesteps, step_size) if isinstance(num_timesteps, int) else num_timesteps
             is_list_type = isinstance(num_timesteps, list)
-            for camera in cameras:
-                for timestep in iterator:
-                    try:
+            for timestep in iterator:
+                try: # to get all cameras for this timestep (and ENSURE all cameras are present)
+                    for camera in cameras:
                         time_id = timestep if is_list_type else f"{timestep * 5:04d}"
                         image_path = os.path.join(subject_path, "images_lr", camera, f"{time_id}_img.jpg")
                         mask_path = os.path.join(subject_path, "fmask_lr", camera, f"{time_id}_img_fmask.png")
@@ -251,14 +251,19 @@ class MVHumanNetDataset(Dataset):
                                         'bbox_face': annots['bbox_face2d'][camera][time_id]
                                     }
                                 }
-                    except Exception as e: # NOTE: this is a hack to ignore missing timesteps
-                        print(f"Error loading subject {subject} camera {camera} timestep {timestep}: {e}")
-                        continue # 
+                except Exception as e: # NOTE: this is a hack to ignore missing timesteps
+                    print(f"Error loading subject {subject} camera {camera} timestep {timestep}: {e}")
+                    subject_map.pop(time_id, None) # remove this timestep from the subject_map
+                    break 
 
             sorted_timesteps = sorted(subject_map.keys())
             for i in range(0, len(sorted_timesteps), step_size):
                 timestep = sorted_timesteps[i]
                 frames_info = subject_map[timestep]
+
+                if len(frames_info.keys()) < self.num_images: # not enough cameras for this timestep to sample
+                    continue # then skip this timestep
+
                 scenes.append({
                     'subject_id': subject,
                     'frames_info': frames_info,
