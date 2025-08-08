@@ -195,7 +195,7 @@ class MVHumanNetDataset(Dataset):
         subjects = load_json(preload_path) # preloaded subject data
         scenes = []
 
-        subjects_with_latents = set([subject for subject in os.listdir(self.latents_dir) if os.path.isdir(os.path.join(self.latents_dir, subject))])
+        subjects_with_latents = set([subject for subject in os.listdir(self.latents_dir) if os.path.exists(os.path.join(self.latents_dir, subject, f"{subject}.npz"))])
         print(f"Found {len(subjects_with_latents)} subjects with latents")
 
         # for each subject (key) in the preloaded data (should be of available latents and metadata):
@@ -409,6 +409,9 @@ class MVHumanNetDataset(Dataset):
             image = Image.open(img_path).convert("RGB")
             img_mask = Image.open(mask_path)
 
+            if img_mask.size != image.size: # ensure matching size! (note: 100681 has different sizes!)
+                image = image.resize(img_mask.size, Image.BILINEAR)
+
             # Create masked image by compositing with black background
             if self.white_background:
                 background = Image.new('RGB', image.size, (255, 255, 255))
@@ -505,6 +508,7 @@ class MVHumanNetDataset(Dataset):
             latent_tensors = [npz_data[f"{sample_cam}.{timestep}"] for sample_cam in camera_order]
             clean_latents = torch.stack([torch.from_numpy(latent_tensor) for latent_tensor in latent_tensors]) # (B, 4, 72, 72)
         else: # encode frames on the fly (DO NOT DO THIS IN DATASET)
+            print(f"DNE: os.path.join(self.latents_dir, subject_id, {subject_id}.npz")
             print("if no precomputed latents, then we need to 'tag' the batch saying that it needs to be encoded during the training loop instead!")
             clean_latents = torch.zeros((self.num_images, 4, self.target_shape[0], self.target_shape[1]))
             # TODO LATER: tag batch to indicate latents need to be computed
