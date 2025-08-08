@@ -132,7 +132,7 @@ data:
     # colmap_dir: /home/stone/dev/datasets/dl3dv_samples/dl3dv-colmap-new/
     # latents_dir: /home/stone/dev/datasets/mvhumannet_samples/mv_latents
     batch_size: 2
-    num_workers: 16
+    num_workers: 8
     num_images: 9
     step_size: 100
     preload_path: /workspace/datasetvol/mvhuman_data/mv_captures/preloaded_filepaths.json

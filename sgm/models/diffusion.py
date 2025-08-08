@@ -176,19 +176,19 @@ class DiffusionEngine(pl.LightningModule):
         loss, loss_dict = self.shared_step(batch)
 
         # Debug: Check LoRA gradients after backward
-        if batch_idx % 10 == 0 and self.verbose_lora_deltas:  # Check every 10 batches
-            lora_grads = []
-            for name, param in self.model.named_parameters():
-                if 'lora' in name and param.grad is not None:
-                    grad_norm = param.grad.norm().item()
-                    lora_grads.append((name, grad_norm))
+        # if batch_idx % 10 == 0 and self.verbose_lora_deltas:  # Check every 10 batches
+        #     lora_grads = []
+        #     for name, param in self.model.named_parameters():
+        #         if 'lora' in name and param.grad is not None:
+        #             grad_norm = param.grad.norm().item()
+        #             lora_grads.append((name, grad_norm))
             
-            if lora_grads:
-                print(f"Batch {batch_idx} - LoRA gradients found:")
-                for name, grad_norm in lora_grads[:3]:  # Show first 3
-                    print(f"  {name}: grad_norm = {grad_norm:.6f}")
-            else:
-                print(f"Batch {batch_idx} - NO LoRA gradients found!")
+        #     if lora_grads:
+        #         print(f"Batch {batch_idx} - LoRA gradients found:")
+        #         for name, grad_norm in lora_grads[:3]:  # Show first 3
+        #             print(f"  {name}: grad_norm = {grad_norm:.6f}")
+        #     else:
+        #         print(f"Batch {batch_idx} - NO LoRA gradients found!")
 
         self.log_dict(
             loss_dict, prog_bar=True, logger=True, on_step=True, on_epoch=False
@@ -260,21 +260,21 @@ class DiffusionEngine(pl.LightningModule):
         if self.use_ema:
             self.model_ema(self.model)
         
-        # Check LoRA parameter changes every 100 batches
-        if hasattr(self, 'initial_lora_params') and self.global_step % 100 == 0 and self.verbose_lora_deltas:
-            print(f"\n=== Global Step {self.global_step} - LoRA Parameter Changes ===")
-            total_change = 0
-            for name, param in self.model.named_parameters():
-                if 'lora' in name and name in self.initial_lora_params:
-                    change = (param.data - self.initial_lora_params[name]).abs().mean().item()
-                    total_change += change
-                    if change > 1e-6:  # Only show significant changes
-                        print(f"  {name}: mean_change = {change:.8f}")
+        # # Check LoRA parameter changes every 100 batches
+        # if hasattr(self, 'initial_lora_params') and self.global_step % 100 == 0 and self.verbose_lora_deltas:
+        #     print(f"\n=== Global Step {self.global_step} - LoRA Parameter Changes ===")
+        #     total_change = 0
+        #     for name, param in self.model.named_parameters():
+        #         if 'lora' in name and name in self.initial_lora_params:
+        #             change = (param.data - self.initial_lora_params[name]).abs().mean().item()
+        #             total_change += change
+        #             if change > 1e-6:  # Only show significant changes
+        #                 print(f"  {name}: mean_change = {change:.8f}")
             
-            if total_change < 1e-6:
-                print("  WARNING: No significant LoRA parameter changes detected!")
-            print(f"  Total mean change: {total_change:.8f}")
-            print("=" * 60)
+        #     if total_change < 1e-6:
+        #         print("  WARNING: No significant LoRA parameter changes detected!")
+        #     print(f"  Total mean change: {total_change:.8f}")
+        #     print("=" * 60)
 
     @contextmanager
     def ema_scope(self, context=None):
