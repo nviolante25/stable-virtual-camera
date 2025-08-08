@@ -195,6 +195,9 @@ class MVHumanNetDataset(Dataset):
         subjects = load_json(preload_path) # preloaded subject data
         scenes = []
 
+        subjects_with_latents = set([subject for subject in os.listdir(self.latents_dir) if os.path.isdir(os.path.join(self.latents_dir, subject))])
+        print(f"Found {len(subjects_with_latents)} subjects with latents")
+
         # for each subject (key) in the preloaded data (should be of available latents and metadata):
         for i, subject in tqdm(enumerate(subjects), total=len(subjects), desc="Loading scenes"):
             if subject == "metadata":
@@ -204,6 +207,8 @@ class MVHumanNetDataset(Dataset):
                 continue
             if self.data_limit is not None and i >= self.data_limit:
                 break
+            if subject not in subjects_with_latents:
+                continue # if no latents precomputed, then skip this
 
             extrinsics = subjects[subject]['extrinsics'] # should be pre-cleaned!
             intrinsics = subjects[subject]['intrinsics']['intrinsics']
@@ -229,23 +234,26 @@ class MVHumanNetDataset(Dataset):
             # build frames_info for each camera, timestep combination
             # store each into scenes
             iterator = range(1, num_timesteps, step_size) if isinstance(num_timesteps, int) else num_timesteps
-            print(f"subject: {subject}, num_timesteps: {num_timesteps}")
             is_list_type = isinstance(num_timesteps, list)
             for camera in cameras:
                 for timestep in iterator:
-                    time_id = timestep if is_list_type else f"{timestep * 5:04d}"
-                    image_path = os.path.join(subject_path, "images_lr", camera, f"{time_id}_img.jpg")
-                    mask_path = os.path.join(subject_path, "fmask_lr", camera, f"{time_id}_img_fmask.png")
-                    # annots_path = os.path.join(subject_path, "annots", camera, f"{time_id}_img.json")
+                    try:
+                        time_id = timestep if is_list_type else f"{timestep * 5:04d}"
+                        image_path = os.path.join(subject_path, "images_lr", camera, f"{time_id}_img.jpg")
+                        mask_path = os.path.join(subject_path, "fmask_lr", camera, f"{time_id}_img_fmask.png")
+                        # annots_path = os.path.join(subject_path, "annots", camera, f"{time_id}_img.json")
 
-                    subject_map[time_id][camera] = {
-                                'image_path': image_path,
-                                'mask_path': mask_path,
-                                'annots': {
-                                    'bbox': annots['bbox'][camera][time_id],
-                                    'bbox_face': annots['bbox_face2d'][camera][time_id]
+                        subject_map[time_id][camera] = {
+                                    'image_path': image_path,
+                                    'mask_path': mask_path,
+                                    'annots': {
+                                        'bbox': annots['bbox'][camera][time_id],
+                                        'bbox_face': annots['bbox_face2d'][camera][time_id]
+                                    }
                                 }
-                            }
+                    except Exception as e: # NOTE: this is a hack to ignore missing timesteps
+                        print(f"Error loading subject {subject} camera {camera} timestep {timestep}: {e}")
+                        continue # 
 
             sorted_timesteps = sorted(subject_map.keys())
             for i in range(0, len(sorted_timesteps), step_size):
