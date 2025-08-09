@@ -511,9 +511,10 @@ class MVHumanNetDataset(Dataset):
         # load latents if we provided a path
         if self.latents_dir is not None and os.path.exists(os.path.join(self.latents_dir, subject_id, f"{subject_id}.npz")):
             npz_file = os.path.join(self.latents_dir, subject_id, f"{subject_id}.npz")
-            npz_data = np.load(npz_file) # this is already for the current subject
-            latent_tensors = [npz_data[f"{sample_cam}.{timestep}"] for sample_cam in camera_order]
-            clean_latents = torch.stack([torch.from_numpy(latent_tensor) for latent_tensor in latent_tensors]) # (B, 4, 72, 72)
+            # npz_data = np.load(npz_file) # this is already for the current subject
+            with np.load(npz_file) as npz_data:
+                latent_tensors = [npz_data[f"{sample_cam}.{timestep}"] for sample_cam in camera_order]
+                clean_latents = torch.stack([torch.from_numpy(latent_tensor) for latent_tensor in latent_tensors]) # (B, 4, 72, 72)
         else: # encode frames on the fly (DO NOT DO THIS IN DATASET)
             print(f"DNE: os.path.join(self.latents_dir, subject_id, {subject_id}.npz")
             print("if no precomputed latents, then we need to 'tag' the batch saying that it needs to be encoded during the training loop instead!")
