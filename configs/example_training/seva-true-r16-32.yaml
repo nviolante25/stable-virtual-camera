@@ -133,7 +133,7 @@ data:
     # latents_dir: /home/stone/dev/datasets/mvhumannet_samples/mv_latents
     batch_size: 2
     num_workers: 8
-    num_images: 9
+    num_images: 8
     step_size: 100
     preload_path: /workspace/datasetvol/mvhuman_data/mv_captures/preloaded_filepaths.json
 # data:
@@ -152,7 +152,7 @@ data:
 lightning:
   modelcheckpoint:
     params:
-      every_n_train_steps: 5000
+      every_n_train_steps: 500
 
   callbacks:
     metrics_over_trainsteps_checkpoint:
@@ -164,7 +164,7 @@ lightning:
       params:
         disabled: False
         enable_autocast: False
-        batch_frequency: 1000
+        batch_frequency: 500
         max_images: 8
         increase_log_steps: False
         log_first_step: False
@@ -178,4 +178,4 @@ lightning:
     benchmark: False
     num_sanity_val_steps: 0
     accumulate_grad_batches: 1
-    max_epochs: 10000
+    max_epochs: 1000
