@@ -1,5 +1,5 @@
 model:
-  base_learning_rate: 6.0e-6
+  base_learning_rate: 1.0e-5
   target: sgm.models.diffusion.DiffusionEngine
   params:
     scale_factor: 0.18215
@@ -152,7 +152,7 @@ data:
 lightning:
   modelcheckpoint:
     params:
-      every_n_train_steps: 200
+      every_n_train_steps: 100
 
   callbacks:
     metrics_over_trainsteps_checkpoint:

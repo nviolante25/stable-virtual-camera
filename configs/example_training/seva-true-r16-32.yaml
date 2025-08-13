@@ -152,7 +152,7 @@ data:
 lightning:
   modelcheckpoint:
     params:
-      every_n_train_steps: 500
+      every_n_train_steps: 100
 
   callbacks:
     metrics_over_trainsteps_checkpoint:
@@ -178,4 +178,4 @@ lightning:
     benchmark: False
     num_sanity_val_steps: 0
     accumulate_grad_batches: 1
-    max_epochs: 1000
+    max_epochs: 100
