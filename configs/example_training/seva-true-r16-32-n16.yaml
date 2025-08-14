@@ -131,7 +131,7 @@ data:
     # root_dir: /home/stone/dev/datasets/mvhumannet_samples/mv_captures
     # colmap_dir: /home/stone/dev/datasets/dl3dv_samples/dl3dv-colmap-new/
     # latents_dir: /home/stone/dev/datasets/mvhumannet_samples/mv_latents
-    batch_size: 2
+    batch_size: 3
     num_workers: 8
     num_images: 16
     step_size: 100
@@ -164,7 +164,7 @@ lightning:
       params:
         disabled: False
         enable_autocast: False
-        batch_frequency: 500
+        batch_frequency: 200
         max_images: 16
         increase_log_steps: False
         log_first_step: False
