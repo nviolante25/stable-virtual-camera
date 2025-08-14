@@ -128,7 +128,7 @@ class MVHumanNetDataset(Dataset):
         self.white_background = white_background
         self.preload_path = preload_path
 
-        if self.num_images >= 16: # if more than 16, disable trajectory NVS batching
+        if self.num_images > 16: # if more than 16, disable trajectory NVS batching
             self.adjacent_frame_sampling_prob = 0.0
 
         # actual data
