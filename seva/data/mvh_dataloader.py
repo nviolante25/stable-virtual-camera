@@ -127,8 +127,9 @@ class MVHumanNetDataset(Dataset):
         self.adjacent_frame_sampling_prob = 0.2 # Trajectory NVS acceptance rate
         self.white_background = white_background
         self.preload_path = preload_path
-        if num_images >= 16: # LIMIT to 16 images
-            self.num_images = 16
+
+        if self.num_images >= 16: # if more than 16, disable trajectory NVS batching
+            self.adjacent_frame_sampling_prob = 0.0
 
         # actual data
         self.cam_params = {} # Dict[subject: (extrinsics, intrinsics, camera_scale)]
@@ -461,33 +462,23 @@ class MVHumanNetDataset(Dataset):
         scale_cameras(c2ws)
 
         # create intrinsics tensor, update intrinsics
-        # TODO: accept multiple camera intrinsics (for random cropping)
-        # NOTE: for preliminary fine-tune testing, we currently account for the uniform center crop
-
         if self.random_crop:
-            # TODO - remove crop_params.npz, just use the annots bbox for square crop (good enough)
-            # get random crop parameters for the subject
-            # if crop_params.npz exists, use it
-            crop_params_path = os.path.join(subject_path, "crop_params.npz")
-            if os.path.exists(crop_params_path):
-                print("crop_params.npz exists")
-                crop_params = np.load(crop_params_path)
-                crop_params = [crop_params[f"{cam}.{timestep}"] for cam in camera_order]
-                crop_params = torch.stack([torch.from_numpy(bbox) for bbox in crop_params]) # (B, 4)
-            else: # use 'annots' instead (less accurate bbox)
-                print("crop_params.npz does not exist")
-                annots_jsons = [frames_info["annots"][cam] for cam in camera_order]
-                crop_params = []
-                for annots_json in annots_jsons:
-                    bbox = annots_json['bbox'][:4]
-                    crop_params.append(bbox)
-                crop_params = torch.stack([torch.from_numpy(bbox) for bbox in crop_params])
-
+            annots_jsons = [frames_info[cam]["annots"] for cam in camera_order]
+            crop_params = []
+            for annots_json in annots_jsons:
+                bbox = annots_json['bbox'][:4]
+                face_bbox = annots_json['bbox_face'][:4]
+                crop_params.append((bbox, face_bbox))
+            # account for mvhn downsampling (hence the 0.5)
+            crop_params = torch.stack([torch.tensor(bbox) * 0.5 for bbox, _ in crop_params])
+            
+            crop_config = {
+                "center_mean": torch.stack([torch.mean(torch.tensor(face_bbox).reshape(2,2).T, dim=0) * 0.5 for _, face_bbox in crop_params]),
+            }
             cropped_imgs, Ks = self.cropper(frames, crop_params, torch.from_numpy(intrinsics).float())
             # later, we resize using transform, so we update cropped intrinsics here accordingly
             scale = np.array([self.target_shape[0] / cropped_img.shape[-2] for cropped_img in cropped_imgs])
             Ks = update_intrinsics_resize(Ks, scale)
-            # ! PROBLEM: from crop, optical center can be negative, in which this does NOT work!
             Ks = normalize_intrinsics(Ks, self.target_shape[0], self.target_shape[1]) # normalize intrinsics (H,W)
             if len(Ks.shape) == 2: # if one shared intrinsic matrix, then repeat it for all
                 Ks = repeat(Ks, 'd1 d2 -> n d1 d2', n=self.num_images)
