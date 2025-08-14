@@ -471,12 +471,12 @@ class MVHumanNetDataset(Dataset):
                 crop_params.append((bbox, face_bbox))
             # account for mvhn downsampling (hence the 0.5)
             bbox_params = torch.stack([torch.tensor(bbox) * 0.5 for bbox, _ in crop_params])
-            face_params = torch.stack([torch.tensor(face_bbox) * 0.5 for _, face_bbox in crop_params])
-            
-            crop_config = {
-                "center_mean": torch.mean(face_params.reshape(-1,2,2).permute(0,2,1), dim=2),
-            }
-            cropped_imgs, Ks = self.cropper(frames, bbox_params, torch.from_numpy(intrinsics).float(), crop_config)
+            # face_params = torch.stack([torch.tensor(face_bbox) * 0.5 for _, face_bbox in crop_params])
+            # apparently, face bbox data isn't really        
+            # crop_config = {
+            #     "center_mean": torch.mean(face_params.reshape(-1,2,2).permute(0,2,1), dim=2),
+            # }
+            cropped_imgs, Ks = self.cropper(frames, bbox_params, torch.from_numpy(intrinsics).float())
             # later, we resize using transform, so we update cropped intrinsics here accordingly
             scale = np.array([self.target_shape[0] / cropped_img.shape[-2] for cropped_img in cropped_imgs])
             Ks = update_intrinsics_resize(Ks, scale)

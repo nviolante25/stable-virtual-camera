@@ -59,7 +59,7 @@ class RandomBBoxCropper(object):
         center_std     = options.get("center_std", torch.stack([(W - bbox_W) / 6, (H - bbox_H) / 6], dim=1))
         crop_size_mean = options.get("crop_size_mean", (bbox_W + bbox_H) // 2)
         crop_size_std  = options.get("crop_size_std", (bbox_W + bbox_H) / 6)
-        longest_dim    = max(torch.max(bbox_W, bbox_H))
+        longest_dim    = torch.max(bbox_W, bbox_H)
         min_crop_size  = options.get("min_crop_size", longest_dim // 2) # half of the larger dimension
 
         # transform all to absolute pixel values (for crop_size, based on min(H,W))
@@ -70,8 +70,13 @@ class RandomBBoxCropper(object):
         crop_size_std  = torch.as_tensor(crop_size_std)
 
         # * sample new center and length of crop
-        center_sample = torch.clamp(torch.randn(B, 2) * center_std + center_mean, min=0, max=longest_dim - (min_crop_size // 2))
-        size_sample   = torch.clamp(torch.randn(B) * crop_size_std + crop_size_mean, min=min_crop_size, max=longest_dim)
+        max_bound = torch.cat((torch.ones(B,1) * W, torch.ones(B,1) * H), dim=1) - (min_crop_size.reshape(-1, 1) // 2)
+        center_sample = torch.clamp(
+            torch.randn(B, 2) * center_std + center_mean, 
+            min=torch.zeros_like(longest_dim).unsqueeze(1), 
+            max=max_bound
+        )
+        size_sample = torch.clamp(torch.randn(B) * crop_size_std + crop_size_mean, min=min_crop_size, max=longest_dim)
 
         if self.crop_size_bounds is not None:
             size_sample = torch.clamp(
@@ -83,29 +88,35 @@ class RandomBBoxCropper(object):
         # calculate crop coordinates of NEW post-sampled crop
         # center_x, center_y = map(int, center_sample)
         center_sample = center_sample.int()
-        crop_size = max(size_sample.int(), min_crop_size)
+        crop_size = torch.maximum(size_sample.int(), min_crop_size)
 
         center_x, center_y = center_sample.T
 
         # "clamp" center within initial bbox, ensuring positive optical centers
-        c1, c2 = K[0, 0, 2], K[0, 1, 2] # ! assumes same intrinsics
+        c1, c2 = K[0, 2], K[1, 2] # ! assumes same intrinsics
         x1 = torch.clamp(center_x - (crop_size // 2), min=0, max=c1).int()
         y1 = torch.clamp(center_y - (crop_size // 2), min=0, max=c2).int()
         x2 = torch.clamp(center_x + (crop_size // 2), min=0, max=W).int()
         y2 = torch.clamp(center_y + (crop_size // 2), min=0, max=H).int()
         
         # if crop size has changed, add the rest to x2 and y2 (but clamp to W, H)
-        if (x2 - x1) != crop_size:
-            x2 = torch.clamp(x1 + crop_size, max=W)
-        if (y2 - y1) != crop_size:
-            y2 = torch.clamp(y1 + crop_size, max=H)
+        x_crop_size = x2 - x1
+        y_crop_size = y2 - y1
+
+        # Update x2 where crop size has changed
+        x_mask = x_crop_size != crop_size
+        x2 = torch.where(x_mask, torch.clamp(x1 + crop_size, max=W), x2)
+
+        # Update y2 where crop size has changed
+        y_mask = y_crop_size != crop_size
+        y2 = torch.where(y_mask, torch.clamp(y1 + crop_size, max=H), y2)
 
         # * update intrinsics
         if len(K.shape) == 2: # repeat original K (3,3) to (B, 3, 3)
-            K = torch.tensor(repeat(K, 'd1 d2 -> n d1 d2', n=B))
+            K_ = torch.tensor(repeat(K, 'd1 d2 -> n d1 d2', n=B))
 
         K_new = update_intrinsics(
-            torch.as_tensor(K), 
+            torch.as_tensor(K_), 
             crop_x=x1, # (B,)
             crop_y=y1, # (B,)
             scale=1, # for MVHumanNet images (downsampled)
