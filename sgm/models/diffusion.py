@@ -164,7 +164,7 @@ class DiffusionEngine(pl.LightningModule):
         loss_dict = {"loss": loss_mean}
         return loss_mean, loss_dict
 
-    def shared_step(self, batch: Dict) -> Any:
+    def shared_step(self, batch: Dict) -> Any: # TODO: check latents are precomputed or not; encode frames and ic images if not
         x = self.get_input(batch)
         x = self.encode_first_stage(x)
         batch["global_step"] = self.global_step

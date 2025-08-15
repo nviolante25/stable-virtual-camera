@@ -62,7 +62,7 @@ class StandardDiffusionLoss(nn.Module):
         network: nn.Module,
         denoiser: Denoiser,
         cond: Dict,
-        input: torch.Tensor,
+        input: torch.Tensor, # this is clean_latent
         batch: Dict,
     ) -> Tuple[torch.Tensor, Dict]:
         additional_model_inputs = {
