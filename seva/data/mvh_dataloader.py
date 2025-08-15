@@ -545,7 +545,9 @@ class MVHumanNetDataset(Dataset):
             dim=1,
         ) # (T, 6 + 1, 72, 72), where 6 is for plucker coords and 1 for binary mask
 
-        if clean_latents:
+        if type(clean_latents) == int and clean_latents == 0:
+            replace = 0
+        else:
             replace = torch.cat( # clean latents and binary mask
                 [
                     clean_latents * self.scale_factor,
@@ -558,8 +560,6 @@ class MVHumanNetDataset(Dataset):
                 ],
                 dim=1,
             )
-        else:
-            replace = 0
 
         ic_mask = torch.zeros(self.num_images, dtype=torch.bool)
         fix_frame_idx = input_frames_indices[np.random.choice(len(input_frames_indices), 1).item()]
@@ -571,7 +571,7 @@ class MVHumanNetDataset(Dataset):
             output_dict = {
                 "clean_latent": clean_latents,
                 "mask": input_frames_mask,
-                "mask_ic": ic_mask, # "one hot" mask for reference images
+                "ic_mask": ic_mask, # "one hot" mask for reference images
                 "ic_paths": ic_paths, # synthetic data paths (None if phase 1)
                 "plucker": pluckers,
                 "camera_mask": camera_mask,
@@ -602,6 +602,7 @@ class MVHumanNetLoader(pl.LightningDataModule):
         only_include: list = None,
         step_size: int = 150,
         preload_path: str = None,
+        synthetic_dataset_path: str = None,
     ):
         super().__init__()
         print("init of DATALOADER")
@@ -615,6 +616,7 @@ class MVHumanNetLoader(pl.LightningDataModule):
         self.only_include = only_include
         self.step_size = step_size
         self.preload_path = preload_path
+        self.synthetic_dataset_path = synthetic_dataset_path
         # Define transforms
         # self.transform = T.Compose([
         #     T.Resize(image_size), # whatever final resolution we want here
@@ -635,7 +637,8 @@ class MVHumanNetLoader(pl.LightningDataModule):
                 data_limit=self.data_limit,
                 only_include=self.only_include,
                 step_size=self.step_size,
-                preload_path=self.preload_path
+                preload_path=self.preload_path,
+                synthetic_dataset_path=self.synthetic_dataset_path
             )
             print("train_dataset loaded")
 
@@ -654,7 +657,8 @@ class MVHumanNetLoader(pl.LightningDataModule):
                 data_limit=self.data_limit,
                 only_include=self.only_include,
                 step_size=self.step_size,
-                preload_path=self.preload_path
+                preload_path=self.preload_path,
+                synthetic_dataset_path=self.synthetic_dataset_path
             )
             
 
