@@ -112,6 +112,7 @@ class MVHumanNetDataset(Dataset):
         white_background=False,
         step_size=20,
         preload_path=None,
+        synthetic_dataset_path=None,
     ):
         self.root_dir = root_dir             # directory of all subject directories
         self.latents_dir = latents_dir       # directory of all latents
@@ -127,6 +128,8 @@ class MVHumanNetDataset(Dataset):
         self.adjacent_frame_sampling_prob = 0.2 # Trajectory NVS acceptance rate
         self.white_background = white_background
         self.preload_path = preload_path
+        self.synthetic_dataset_path = synthetic_dataset_path # IC-light/InfU output directory
+        # if not None, will use the "phase 2" expected training process
 
         if self.num_images > 16: # if more than 16, disable trajectory NVS batching
             self.adjacent_frame_sampling_prob = 0.0
@@ -196,8 +199,10 @@ class MVHumanNetDataset(Dataset):
         subjects = load_json(preload_path) # preloaded subject data
         scenes = []
 
-        subjects_with_latents = set([subject for subject in os.listdir(self.latents_dir) if os.path.exists(os.path.join(self.latents_dir, subject, f"{subject}.npz"))])
-        print(f"Found {len(subjects_with_latents)} subjects with latents")
+        subjects_with_latents = None
+        if self.latents_dir is not None:
+            subjects_with_latents = set([subject for subject in os.listdir(self.latents_dir) if os.path.exists(os.path.join(self.latents_dir, subject, f"{subject}.npz"))])
+            print(f"Found {len(subjects_with_latents)} subjects with latents")
 
         # for each subject (key) in the preloaded data (should be of available latents and metadata):
         for i, subject in tqdm(enumerate(subjects), total=len(subjects), desc="Loading scenes"):
@@ -208,7 +213,7 @@ class MVHumanNetDataset(Dataset):
                 continue
             if self.data_limit is not None and i >= self.data_limit:
                 break
-            if subject not in subjects_with_latents or len(subjects[subject]['cameras']) != 48:
+            if (subjects_with_latents is not None and subject not in subjects_with_latents) or len(subjects[subject]['cameras']) != 48:
                 print(f"Skipping subject {subject} because it does not have all 48 cameras or latents precomputed!")
                 continue # if no latents precomputed for this subject, or if not all cameras are present, then skip this
 
@@ -290,10 +295,15 @@ class MVHumanNetDataset(Dataset):
         (Implicitly also updates self.cam_params)
         """
         scenes = []
-        valid_latent_scenes = [
-            subject for subject in os.listdir(self.latents_dir)
-            if subject in os.listdir(self.root_dir)
-        ]
+        valid_latent_scenes = None
+        if self.latents_dir is not None:    
+            valid_latent_scenes = [
+                subject for subject in os.listdir(self.latents_dir)
+                if subject in os.listdir(self.root_dir)
+            ]
+        else:
+            valid_latent_scenes = os.listdir(self.root_dir)
+
         for i, subject in tqdm(enumerate(valid_latent_scenes), total=len(valid_latent_scenes), desc="Loading scenes"):
             if self.data_limit is not None and i >= self.data_limit:
                 break
@@ -476,9 +486,9 @@ class MVHumanNetDataset(Dataset):
             # crop_config = {
             #     "center_mean": torch.mean(face_params.reshape(-1,2,2).permute(0,2,1), dim=2),
             # }
-            cropped_imgs, Ks = self.cropper(frames, bbox_params, torch.from_numpy(intrinsics).float())
+            frames, Ks = self.cropper(frames, bbox_params, torch.from_numpy(intrinsics).float())
             # later, we resize using transform, so we update cropped intrinsics here accordingly
-            scale = np.array([self.target_shape[0] / cropped_img.shape[-2] for cropped_img in cropped_imgs])
+            scale = np.array([self.target_shape[0] / cropped_img.shape[-2] for cropped_img in frames])
             Ks = update_intrinsics_resize(Ks, scale)
             Ks = normalize_intrinsics(Ks, self.target_shape[0], self.target_shape[1]) # normalize intrinsics (H,W)
             if len(Ks.shape) == 2: # if one shared intrinsic matrix, then repeat it for all
@@ -508,12 +518,12 @@ class MVHumanNetDataset(Dataset):
                 latent_tensors = [npz_data[f"{sample_cam}.{timestep}"] for sample_cam in camera_order]
                 clean_latents = torch.stack([torch.from_numpy(latent_tensor) for latent_tensor in latent_tensors]) # (B, 4, 72, 72)
         else: # encode frames on the fly (DO NOT DO THIS IN DATASET)
-            print(f"DNE: os.path.join(self.latents_dir, subject_id, {subject_id}.npz")
-            print("if no precomputed latents, then we need to 'tag' the batch saying that it needs to be encoded during the training loop instead!")
-            clean_latents = torch.zeros((self.num_images, 4, self.target_shape[0], self.target_shape[1]))
-            # TODO LATER: tag batch to indicate latents need to be computed
+            clean_latents = 0  # just use 'frames' (already pre-masked and cropped) in SevaWrapper
+            # clean_latents = torch.zeros((self.num_images, 4, self.target_shape[0], self.target_shape[1]))
 
         w2cs = torch.linalg.inv(c2ws)
+        # TODO - change plucker coordinates such that negative optical centers are ALLOWED.
+        # simply ensure that they are still normalized using W and H.
         pluckers = get_plucker_coordinates(
             extrinsics_src=w2cs[input_frames_indices[0]],
             extrinsics=w2cs,
@@ -521,8 +531,6 @@ class MVHumanNetDataset(Dataset):
             target_size=(self.target_shape[0] // self.downsample_factor, 
                          self.target_shape[1] // self.downsample_factor),
         )
-
-        # print("pluckers.shape: ", pluckers.shape)
 
         concat = torch.cat( # binary mask and plcukers
             [
@@ -537,25 +545,34 @@ class MVHumanNetDataset(Dataset):
             dim=1,
         ) # (T, 6 + 1, 72, 72), where 6 is for plucker coords and 1 for binary mask
 
-        # print("concat.shape: ", concat.shape)
+        if clean_latents:
+            replace = torch.cat( # clean latents and binary mask
+                [
+                    clean_latents * self.scale_factor,
+                    repeat(
+                        input_frames_mask,
+                        "n -> n 1 h w",
+                        h=pluckers.shape[2],
+                        w=pluckers.shape[3],
+                    ),
+                ],
+                dim=1,
+            )
+        else:
+            replace = 0
 
-        replace = torch.cat( # clean latents and binary mask
-            [
-                clean_latents * self.scale_factor,
-                repeat(
-                    input_frames_mask,
-                    "n -> n 1 h w",
-                    h=pluckers.shape[2],
-                    w=pluckers.shape[3],
-                ),
-            ],
-            dim=1,
-        )
+        ic_mask = torch.zeros(self.num_images, dtype=torch.bool)
+        fix_frame_idx = input_frames_indices[np.random.choice(len(input_frames_indices), 1).item()]
+        ic_mask[fix_frame_idx] = True # this becomes the fixed frame
+        ic_paths = [path.replace("mv_captures", "relit_images").replace(".jpg", ".png") for path in sampled_image_paths]
+        # ! NOTE: only works with IC-light; need to combine with InfU later.
 
         try:
             output_dict = {
                 "clean_latent": clean_latents,
                 "mask": input_frames_mask,
+                "mask_ic": ic_mask, # "one hot" mask for reference images
+                "ic_paths": ic_paths, # synthetic data paths (None if phase 1)
                 "plucker": pluckers,
                 "camera_mask": camera_mask,
                 "concat": concat,
