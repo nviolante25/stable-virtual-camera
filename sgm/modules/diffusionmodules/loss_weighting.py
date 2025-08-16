@@ -34,6 +34,8 @@ class EpsWeighting(DiffusionLossWeighting):
 class SevaWeighting(DiffusionLossWeighting):
     def __call__(self, sigma: torch.Tensor, mask, max_weight=5.0) -> torch.Tensor:
         # * for phase 2, mask is now ref_mask (originally input_frames_mask)
+        # NOTE: weights  are based on "dists", but indices are not necessarily 
+        # ordered by distance from a reference frame
         bools = mask.to(torch.bool)
         batch_size, N = bools.shape
         indices = torch.arange(N, device=bools.device).unsqueeze(0).expand(batch_size, N)

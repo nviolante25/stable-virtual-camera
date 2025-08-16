@@ -93,7 +93,9 @@ model:
               unsqueeze_dim: True
 
     first_stage_config:
-      target: sgm.models.autoencoder.IdentityFirstStage
+      target: sgm.modules.encoders.modules.SevaAutoencoder
+      params:
+        scale_factor: 1.0 # already scaled internally
 
     loss_fn_config:
       target: sgm.modules.diffusionmodules.loss.StandardDiffusionLoss
@@ -135,6 +137,7 @@ data:
     num_workers: 8
     num_images: 8
     step_size: 60
+    only_include: ["100001", "100002", "100003", "100004", "100005", "100006", "100007", "100008"]
     preload_path: /workspace/datasetvol/mvhuman_data/mv_captures/preloaded_filepaths.json
 # data:
 #   target: sgm.data.dataset.DL3DVDataModuleFromConfig

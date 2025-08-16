@@ -169,23 +169,25 @@ class DiffusionEngine(pl.LightningModule):
     def _encode_inconsistent_images(self, paths: List[str], ref_mask: torch.Tensor) -> torch.Tensor:
         # TODO: optimize such that we only encode images that are needed using ref_mask
         # load images from paths and convert to tensors
-        images = []
-        for path, mask in zip(paths, ref_mask): # assumes these are already (576,576)
-            img = Image.open(path).convert('RGB')
-            # Apply same transforms as your dataloader
-            transform = T.Compose([
-                T.ToTensor(),
-                T.Normalize([0.5], [0.5])  # Scale to [-1, 1]
-            ])
-            img_tensor = transform(img)
-            images.append(img_tensor)
-        
-        # Stack tensors and move to device
-        images_tensor = torch.stack(images).to(self.device)
-        
-        # encode images
-        latents = self.encode_first_stage(images_tensor)
-        return latents
+        latents = []
+        num_images = len(paths)
+        with torch.no_grad():
+            for batch in list(zip(*paths)): # assumes these are already (576,576)
+                batch_images = []
+                for path in batch:
+                    img = Image.open(path).convert('RGB')
+                    # Apply same transforms as your dataloader
+                    transform = T.Compose([
+                        T.Resize((576, 576)),
+                        T.ToTensor(),
+                        T.Normalize([0.5], [0.5])  # Scale to [-1, 1]
+                    ])
+                    img_tensor = transform(img)
+                    batch_images.append(img_tensor)
+                batch_tensor = torch.stack(batch_images).to(self.device)
+                latents.append(self.encode_first_stage(batch_tensor))
+            latents = torch.cat(latents, dim=0)
+        return latents.reshape(-1, num_images, 4, 72, 72) # ! HARDCODED
 
     def shared_step(self, batch: Dict) -> Any: # TODO: check latents are precomputed or not; encode frames and ic images if not
         x = self.get_input(batch)
@@ -205,13 +207,13 @@ class DiffusionEngine(pl.LightningModule):
                 batch["clean_latent"] * self.scale_factor,
                 repeat(
                     batch["ref_mask"],
-                    "n -> n 1 h w",
-                    h=batch["concat"].shape[2],
-                    w=batch["concat"].shape[3]
+                    "b n -> b n 1 h w",
+                    h=batch["concat"].shape[-2],
+                    w=batch["concat"].shape[-1]
                 )
-            ], dim=1),
-            "concat": torch.cat([batch["concat"], ic], dim=1)
-        }) # concat to be (T, 6(plucker) + 2(masks) + 4(ic))
+            ], dim=2),
+            "concat": torch.cat([batch["concat"], ic], dim=2)
+        }) # concat to be (B, T, 6(plucker) + 2(masks) + 4(ic))
 
         batch["global_step"] = self.global_step
         loss, loss_dict = self(x, batch)

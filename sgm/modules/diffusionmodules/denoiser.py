@@ -23,7 +23,7 @@ class Denoiser(nn.Module):
     def forward(
         self,
         network: nn.Module,
-        input: torch.Tensor,
+        input: torch.Tensor, # noisy latents
         sigma: torch.Tensor,
         cond: Dict,
         **additional_model_inputs,

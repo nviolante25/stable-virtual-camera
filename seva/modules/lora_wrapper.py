@@ -41,9 +41,7 @@ class SevaLoRAWrapper(nn.Module):
         # (excludes the LoRA-transformed MultiviewTransformer's attn1 block in the 9th element of output_blocks)
         # can exclude an entire block by passing in the block's name (e.g. "output_blocks.9", "input_blocks", etc.)
 
-        # Freeze base model parameters
-        for param in self.seva_model.parameters():
-            param.requires_grad = False
+        self.seva_model.freeze(["middle", "output"]) # ensure frozen layers
 
         if target_modules is None:
             # only attention-based layers by default (can extend to 'ff' if needed)

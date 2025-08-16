@@ -16,7 +16,7 @@ from seva.modules.layers import (
 from seva.modules.transformer import MultiviewTransformer
 from typing import Union
 
-from seva.utils import download_pretrained_checkpoint, print_load_warning
+
 from safetensors.torch import load_file
 
 @dataclass
@@ -180,24 +180,28 @@ class Seva(nn.Module):
         )
 
         if load_pretrained:
-            state_dict, input_block_c1 = download_pretrained_checkpoint() # gets state_dict with input block removed
-            missing, unexpected = self.load_state_dict(state_dict, strict=False, assign=True)
+            from seva.utils import print_load_warning
+            state_dict = load_seva_state_dict(params)
+            missing, unexpected = self.load_state_dict(state_dict, assign=True)
             print_load_warning(missing, unexpected)
-            self.input_blocks[0][0] = input_block_c1 # zero-concat with the original input blocks
-
         
         if params.ckpt_path is not None:
+            from seva.utils import print_load_warning
             state_dict = load_file(params.ckpt_path)
             missing, unexpected = self.load_state_dict(state_dict, strict=False, assign=True)
             print_load_warning(missing, unexpected)
 
-
-
         if freeze_layers:
-            # for param in self.input_blocks.parameters():
-            #     param.requires_grad = False
+            self.freeze()
+    
+    def freeze(self, layers: list[str] = ["middle", "output"]):
+        if "input" in layers:
+            for param in self.input_blocks.parameters():
+                param.requires_grad = False
+        if "middle" in layers:
             for param in self.middle_block.parameters():
                 param.requires_grad = False
+        if "output" in layers:
             for param in self.output_blocks.parameters():
                 param.requires_grad = False
 
@@ -244,22 +248,30 @@ class Seva(nn.Module):
         return self.out(h) # [B*num_images, C=4, H=72, W=72]
 
 
-def load_seva_model(
-    pretrained_model_name_or_path: str = "stabilityai/stable-virtual-camera",
+def load_seva_state_dict(
     params: SevaParams = SevaParams(),
+    pretrained_model_name_or_path: str = "stabilityai/stable-virtual-camera",
     weight_name: str = "model.safetensors",
     device: str | torch.device = "cuda",
 ):
+    from seva.utils import download_pretrained_checkpoint
     state_dict = download_pretrained_checkpoint(pretrained_model_name_or_path, weight_name, device)
     input_block_c1 = state_dict["input_blocks.0.0.weight"] # reshape this based on params.in_channels
+    input_block_b1 = state_dict["input_blocks.0.0.bias"]
     new_input_block = nn.Conv2d(params.in_channels, params.model_channels, 3, padding=1)
-    new_input_block.weight.data[:input_block_c1.shape[0], :, :, :] = input_block_c1
-    new_input_block.weight.data[input_block_c1.shape[0]:, :, :, :] = 0 # zeros for the rest
-    state_dict_without_input_block = {
-        k: v for k, v in state_dict.items() if not k.startswith("input_blocks")
+    new_input_block.weight.data[:, :input_block_c1.shape[1], :, :] = input_block_c1
+    new_input_block.weight.data[:, input_block_c1.shape[1]:, :, :] = 0 # zeros for the rest
+    new_input_block.bias.data[:input_block_b1.shape[0]] = input_block_b1
+    new_input_block.bias.data[input_block_b1.shape[0]:] = 0 # zeros for the rest
+    new_state_dict = {
+        "input_blocks.0.0.weight": new_input_block.weight,
+        "input_blocks.0.0.bias": new_input_block.bias,
     }
+    for k, v in state_dict.items():
+        if not k.startswith("input_blocks.0.0"):
+            new_state_dict[k] = v
 
-    return state_dict_without_input_block, new_input_block
+    return new_state_dict
 
 
 # for compatibility with SGM

@@ -89,7 +89,7 @@ class StandardDiffusionLoss(nn.Module):
         )
         # print("\nStandardDiffusionLoss::forward cond2:\n", cond)
         if "mask" in cond:
-            w = append_dims(self.loss_weighting(sigmas, cond["mask"]), input.ndim)
+            w = append_dims(self.loss_weighting(sigmas, cond["mask"]), input.ndim) # replace with ref_mask
         else:
             w = append_dims(self.loss_weighting(sigmas), input.ndim)
         return self.get_loss(model_output, input, w)
