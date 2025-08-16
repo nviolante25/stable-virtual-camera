@@ -34,9 +34,10 @@ class Denoiser(nn.Module):
         c_skip, c_out, c_in, c_noise = self.scaling(sigma)
         c_noise = self.possibly_quantize_c_noise(c_noise.reshape(sigma_shape))
         
-        if "replace" in cond: # TODO: only make ref image clean_latent; all others need to be sampled
-            x, mask = cond["replace"].split((input.shape[-3], 1), dim=-3) # replace with clean latent
-            input = input * (1 - mask) + x * mask # x is from clean_latent, input is noised latents
+        if "replace" in cond:
+            # TODO: only make ref image clean_latent; all others need to be sampled
+            x, ref_mask = cond["replace"].split((input.shape[-3], 1), dim=-3) # 'x' is clean latent
+            input = input * (1 - ref_mask) + x * ref_mask
             
         return (
             network(input * c_in, c_noise, cond, **additional_model_inputs) * c_out

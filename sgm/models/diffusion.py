@@ -7,6 +7,9 @@ import torch
 from omegaconf import ListConfig, OmegaConf
 from safetensors.torch import load_file as load_safetensors
 from torch.optim.lr_scheduler import LambdaLR
+from PIL import Image
+import torchvision.transforms.v2 as T
+from einops import repeat
 
 from ..modules import UNCONDITIONAL_CONFIG
 from ..modules.autoencoding.temporal_ae import VideoDecoder
@@ -158,15 +161,58 @@ class DiffusionEngine(pl.LightningModule):
         return z
 
     def forward(self, x, batch):
-        # print("\nDiffusionEngine::forward self.conditioner:\n", self.conditioner)
         loss = self.loss_fn(self.model, self.denoiser, self.conditioner, x, batch)
         loss_mean = loss.mean()
         loss_dict = {"loss": loss_mean}
         return loss_mean, loss_dict
 
+    def _encode_inconsistent_images(self, paths: List[str], ref_mask: torch.Tensor) -> torch.Tensor:
+        # TODO: optimize such that we only encode images that are needed using ref_mask
+        # load images from paths and convert to tensors
+        images = []
+        for path, mask in zip(paths, ref_mask): # assumes these are already (576,576)
+            img = Image.open(path).convert('RGB')
+            # Apply same transforms as your dataloader
+            transform = T.Compose([
+                T.ToTensor(),
+                T.Normalize([0.5], [0.5])  # Scale to [-1, 1]
+            ])
+            img_tensor = transform(img)
+            images.append(img_tensor)
+        
+        # Stack tensors and move to device
+        images_tensor = torch.stack(images).to(self.device)
+        
+        # encode images
+        latents = self.encode_first_stage(images_tensor)
+        return latents
+
     def shared_step(self, batch: Dict) -> Any: # TODO: check latents are precomputed or not; encode frames and ic images if not
         x = self.get_input(batch)
-        x = self.encode_first_stage(x)
+        if x.shape == 1: # latents are NOT computed yet
+            x = batch["frames"].to(self.device)
+            x = self.encode_first_stage(x)
+            batch["clean_latent"] = x
+        # else: latents already precomputed (same as "IdentityEncoder")
+
+        # encode ic latents from the paths
+        ic = self._encode_inconsistent_images(batch.pop("ic_paths"), batch["ref_mask"])
+
+        # update replace with the clean latents
+        # add ic as conditioning (along with clean + plucker + masks)
+        batch.update({
+            "replace": torch.cat([
+                batch["clean_latent"] * self.scale_factor,
+                repeat(
+                    batch["ref_mask"],
+                    "n -> n 1 h w",
+                    h=batch["concat"].shape[2],
+                    w=batch["concat"].shape[3]
+                )
+            ], dim=1),
+            "concat": torch.cat([batch["concat"], ic], dim=1)
+        }) # concat to be (T, 6(plucker) + 2(masks) + 4(ic))
+
         batch["global_step"] = self.global_step
         loss, loss_dict = self(x, batch)
         return loss, loss_dict

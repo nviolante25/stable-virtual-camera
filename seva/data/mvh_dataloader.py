@@ -450,6 +450,13 @@ class MVHumanNetDataset(Dataset):
         input_frames_mask = torch.zeros(self.num_images, dtype=torch.bool)
         input_frames_mask[input_frames_indices] = True
 
+        # reference mask for SimVS
+        ref_mask = torch.zeros(self.num_images, dtype=torch.bool)
+        fix_frame_idx = input_frames_indices[np.random.choice(len(input_frames_indices), 1).item()]
+        ref_mask[fix_frame_idx] = True # this becomes the fixed frame
+        ic_paths = [path.replace("mv_captures", "relit_images").replace(".jpg", ".png") for path in sampled_image_paths]
+        # ! NOTE: only works with IC-light; need to combine with InfU later.
+
         camera_mask = torch.ones(self.num_images, dtype=torch.bool)
 
         def get_c2w(cam):
@@ -522,8 +529,6 @@ class MVHumanNetDataset(Dataset):
             # clean_latents = torch.zeros((self.num_images, 4, self.target_shape[0], self.target_shape[1]))
 
         w2cs = torch.linalg.inv(c2ws)
-        # TODO - change plucker coordinates such that negative optical centers are ALLOWED.
-        # simply ensure that they are still normalized using W and H.
         pluckers = get_plucker_coordinates(
             extrinsics_src=w2cs[input_frames_indices[0]],
             extrinsics=w2cs,
@@ -532,13 +537,19 @@ class MVHumanNetDataset(Dataset):
                          self.target_shape[1] // self.downsample_factor),
         )
 
-        concat = torch.cat( # binary mask and plcukers
+        concat = torch.cat( # binary masks (inp/tgt + ref) and pluckers
             [
                 repeat(
                     input_frames_mask,
                     "n -> n 1 h w",
                     h=pluckers.shape[2],
                     w=pluckers.shape[3],
+                ),
+                repeat(
+                    ref_mask, 
+                    "n -> n 1 h w", 
+                    h=pluckers.shape[2],
+                    w=pluckers.shape[3] 
                 ),
                 pluckers,
             ],
@@ -548,31 +559,35 @@ class MVHumanNetDataset(Dataset):
         if type(clean_latents) == int and clean_latents == 0:
             replace = 0
         else:
-            replace = torch.cat( # clean latents and binary mask
+            replace = torch.cat(
                 [
                     clean_latents * self.scale_factor,
+                    # repeat( -- old Seva
+                    #     input_frames_mask,
+                    #     "n -> n 1 h w",
+                    #     h=pluckers.shape[2],
+                    #     w=pluckers.shape[3],
+                    # ),
                     repeat(
-                        input_frames_mask,
-                        "n -> n 1 h w",
-                        h=pluckers.shape[2],
-                        w=pluckers.shape[3],
+                    ref_mask, 
+                    "n -> n 1 h w", 
+                    h=pluckers.shape[2],
+                    w=pluckers.shape[3] 
                     ),
                 ],
                 dim=1,
             )
 
-        ic_mask = torch.zeros(self.num_images, dtype=torch.bool)
-        fix_frame_idx = input_frames_indices[np.random.choice(len(input_frames_indices), 1).item()]
-        ic_mask[fix_frame_idx] = True # this becomes the fixed frame
-        ic_paths = [path.replace("mv_captures", "relit_images").replace(".jpg", ".png") for path in sampled_image_paths]
-        # ! NOTE: only works with IC-light; need to combine with InfU later.
-
         try:
+            # ensure in shared_step:
+            # - clean_latents gets encoded on the fly (if not found)
+            # - update concat with ic latents
+            # - replace gets updated
             output_dict = {
                 "clean_latent": clean_latents,
                 "mask": input_frames_mask,
-                "ic_mask": ic_mask, # "one hot" mask for reference images
-                "ic_paths": ic_paths, # synthetic data paths (None if phase 1)
+                "ref_mask": ref_mask, # "one hot" mask for reference images 
+                "ic_paths": ic_paths, # synthetic data paths
                 "plucker": pluckers,
                 "camera_mask": camera_mask,
                 "concat": concat,
