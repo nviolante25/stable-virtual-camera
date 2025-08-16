@@ -3,7 +3,6 @@ import os
 import safetensors.torch
 import torch
 from huggingface_hub import hf_hub_download
-
 from seva.model import Seva, SevaParams
 
 
@@ -25,19 +24,16 @@ def print_load_warning(missing: list[str], unexpected: list[str]) -> None:
     elif len(unexpected) > 0:
         print(f"Got {len(unexpected)} unexpected keys:\n\t" + "\n\t".join(unexpected))
 
-
-def load_model(
+def download_pretrained_checkpoint(
     pretrained_model_name_or_path: str = "stabilityai/stable-virtual-camera",
     weight_name: str = "model.safetensors",
-    device: str | torch.device = "cuda",
-    verbose: bool = False,
-    freeze: bool = True,
-) -> Seva:
+    device: str | torch.device = "cpu",
+):
     if os.path.isdir(pretrained_model_name_or_path):
         weight_path = os.path.join(pretrained_model_name_or_path, weight_name)
     else:
         weight_path = hf_hub_download(
-            repo_id=pretrained_model_name_or_path, filename=weight_name
+            repo_id=pretrained_model_name_or_path, filename=weight_name, local_dir="/workspace/"
         )
         _ = hf_hub_download(
             repo_id=pretrained_model_name_or_path, filename="config.yaml"
@@ -47,6 +43,16 @@ def load_model(
         weight_path,
         device=str(device),
     )
+    return state_dict
+
+def load_model(
+    pretrained_model_name_or_path: str = "stabilityai/stable-virtual-camera",
+    weight_name: str = "model.safetensors",
+    device: str | torch.device = "cuda",
+    verbose: bool = False,
+    freeze: bool = True,
+) -> Seva:
+    state_dict = download_pretrained_checkpoint(pretrained_model_name_or_path, weight_name, device)
 
     with torch.device("meta"):
         model = Seva(SevaParams(), freeze_layers=freeze).to(torch.bfloat16)
