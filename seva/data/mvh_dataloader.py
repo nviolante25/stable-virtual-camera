@@ -584,7 +584,7 @@ class MVHumanNetDataset(Dataset):
             # - update concat with ic latents
             # - replace gets updated
             output_dict = {
-                "clean_latent": clean_latents,
+                "clean_latent": clean_latents, # unscaled clean latents
                 "mask": input_frames_mask,
                 "ref_mask": ref_mask, # "one hot" mask for reference images 
                 "ic_paths": ic_paths, # synthetic data paths
@@ -592,7 +592,7 @@ class MVHumanNetDataset(Dataset):
                 "camera_mask": camera_mask,
                 "concat": concat,
                 "frames": frames,
-                "replace": replace,
+                "replace": replace, # contains pre-scaled clean latents!
                 "c2w": c2ws,
                 "K": Ks,
             }
@@ -607,9 +607,9 @@ class MVHumanNetLoader(pl.LightningDataModule):
     def __init__(
         self,
         root_dir: str,
-        latents_dir: str,
         num_images: int,
         batch_size: int,
+        latents_dir: str = None,
         num_workers: int = 0,
         shuffle: bool = True,
         image_size: int = 576,
@@ -622,7 +622,7 @@ class MVHumanNetLoader(pl.LightningDataModule):
         super().__init__()
         print("init of DATALOADER")
         self.root_dir = root_dir
-        self.latents_dir = latents_dir
+        self.latents_dir = os.path.join(self.latents_dir) if latents_dir is not None else None
         self.num_images = num_images
         self.batch_size = batch_size
         self.num_workers = num_workers
@@ -646,7 +646,7 @@ class MVHumanNetLoader(pl.LightningDataModule):
             print("train is reached")
             self.train_dataset = MVHumanNetDataset(
                 root_dir=os.path.join(self.root_dir),
-                latents_dir=os.path.join(self.latents_dir),
+                latents_dir=self.latents_dir,
                 num_images=self.num_images,
                 transforms=self.transform,
                 data_limit=self.data_limit,
@@ -666,7 +666,7 @@ class MVHumanNetLoader(pl.LightningDataModule):
         if stage == "test" or stage is None:
             self.test_dataset = MVHumanNetDataset(
                 root_dir=os.path.join(self.root_dir, "test"),
-                latents_dir=os.path.join(self.latents_dir),
+                latents_dir=self.latents_dir,
                 num_images=self.num_images,
                 transforms=self.transform,
                 data_limit=self.data_limit,

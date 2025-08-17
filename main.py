@@ -675,13 +675,20 @@ class ImageLogger(Callback):
                     ucg_keys = conditioner_input_keys
 
                 log = dict()
-                x = pl_module.get_input(batch) # clean_latent
+                x = pl_module.get_input(batch) # clean_latent (if not provided, this maybe placeholder 0)
+                if len(x.shape) == 1: # latents are NOT computed yet
+                    x = batch["frames"].to(pl_module.device)
+                    batch_latents = []
+                    for b in x:
+                        batch_latents.append(pl_module.encode_first_stage(b)) # scales automatically
+                    x = torch.stack(batch_latents, dim=0)
+                    batch["clean_latent"] = x
                 ic = pl_module._encode_inconsistent_images(batch.pop("ic_paths"), batch["ref_mask"], x)    
 
                 # update the batch using this
                 batch.update({
                     "replace": torch.cat([
-                        batch["clean_latent"] * pl_module.scale_factor,
+                        batch["clean_latent"],
                         repeat(
                             batch["ref_mask"],
                             "b n -> b n 1 h w",
@@ -710,12 +717,10 @@ class ImageLogger(Callback):
                 # keep GPU until we have the generated latents
                 N = min(x.shape[0], self.max_images) # these only get the first N batches
                 x = x.to(pl_module.device)[:N]
-                if x.shape[-1] == 576:
+                if x.shape[-1] == 576: # ! HARDCODED
                     z = pl_module.encode_first_stage(x) # identity; keep encoding on GPU (scales clean_latents using scale_factor)
                 else:
-                    z = x # already clean latents
-
-                # get ic latents again
+                    z = x * pl_module.scale_factor # already clean latents (need to scale)
 
                 for k in c:
                     if isinstance(c[k], torch.Tensor):
@@ -731,6 +736,9 @@ class ImageLogger(Callback):
                 z = z.to("cpu")
                 samples = samples.to("cpu")
                 gt_images = batch["frames"][:N].to("cpu") # choose first N from B
+                ic = ic[:N].to("cpu")
+                ref_mask = batch["ref_mask"][:N].to("cpu")
+                gt_images[~ref_mask] = ic[~ref_mask]
 
                 # unlike in original impl., we have yet to decode the latents; hence, pre-image
                 pre_images = {}

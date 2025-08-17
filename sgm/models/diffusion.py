@@ -192,24 +192,26 @@ class DiffusionEngine(pl.LightningModule):
             latents[ref_mask] = clean_latent[ref_mask]
         return latents
 
-    def shared_step(self, batch: Dict) -> Any: # TODO: check latents are precomputed or not; encode frames and ic images if not
+    def shared_step(self, batch: Dict) -> Any: 
         x = self.get_input(batch)
-        if x.shape == 1: # latents are NOT computed yet
+        if len(x.shape) == 1: # latents are NOT computed yet
             x = batch["frames"].to(self.device)
-            x = self.encode_first_stage(x)
+            batch_latents = []
+            for b in x:
+                batch_latents.append(self.encode_first_stage(b))
+            x = torch.stack(batch_latents, dim=0)
             batch["clean_latent"] = x
-        # else: latents already precomputed (same as "IdentityEncoder")
+        else: #latents already precomputed (same as "IdentityEncoder")
+            batch["clean_latent"] = x * self.scale_factor # need to scale!
 
-        # encode ic latents from the paths
+        # encode ic latents from the paths (scales)
         ic = self._encode_inconsistent_images(batch.pop("ic_paths"), batch["ref_mask"], batch["clean_latent"])
 
         # ensure for ref image, ic tensors should be replaced by clean latents 
-
-        # update replace with the clean latents
-        # add ic as conditioning (along with clean + plucker + masks)
+        # add ic as conditioning in concat (along with clean + plucker + masks)
         batch.update({
             "replace": torch.cat([
-                batch["clean_latent"] * self.scale_factor,
+                batch["clean_latent"],
                 repeat(
                     batch["ref_mask"],
                     "b n -> b n 1 h w",
