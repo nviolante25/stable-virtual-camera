@@ -196,8 +196,13 @@ class Seva(nn.Module):
     
     def freeze(self, layers: list[str] = ["middle", "output"]):
         if "input" in layers:
-            for param in self.input_blocks.parameters():
-                param.requires_grad = False
+            input_param_gen = self.input_blocks.named_parameters()
+            for (name, param) in input_param_gen:
+                if name.startswith("0.0"):
+                    param.requires_grad = True
+                else:
+                    param.requires_grad = False
+
         if "middle" in layers:
             for param in self.middle_block.parameters():
                 param.requires_grad = False
