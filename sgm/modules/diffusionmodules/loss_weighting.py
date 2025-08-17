@@ -64,7 +64,7 @@ class SimVSWeighting(DiffusionLossWeighting):
         batch_size, N = bools.shape
         indices = torch.arange(N, device=bools.device).unsqueeze(0).expand(batch_size, N)
         weights = torch.full((batch_size, N), max_weight, dtype=torch.float, device=bools.device)
-        ref_weights = torch.ones_like(ref_bools) - ref_bools.astype(torch.float) # zero for ref frames, one for others
+        ref_weights = torch.ones_like(ref_bools, dtype=torch.float) - ref_bools.to(torch.float) # zero for ref frames, one for others
         
         for b in range(batch_size):
             true_idx = indices[b][bools[b]]

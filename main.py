@@ -30,6 +30,7 @@ import threading
 import queue
 from typing import Dict
 from dataclasses import dataclass
+from einops import repeat
 
 MULTINODE_HACKS = True
 
@@ -675,6 +676,22 @@ class ImageLogger(Callback):
 
                 log = dict()
                 x = pl_module.get_input(batch) # clean_latent
+                ic = pl_module._encode_inconsistent_images(batch.pop("ic_paths"), batch["ref_mask"], x)    
+
+                # update the batch using this
+                batch.update({
+                    "replace": torch.cat([
+                        batch["clean_latent"] * pl_module.scale_factor,
+                        repeat(
+                            batch["ref_mask"],
+                            "b n -> b n 1 h w",
+                            h=batch["concat"].shape[-2],
+                            w=batch["concat"].shape[-1]
+                        )
+                    ], dim=2),
+                    "concat": torch.cat([batch["concat"], ic], dim=2)
+                }) # concat to be (B, T, 6(plucker) + 2(masks) + 4(ic))
+
                 c, uc = pl_module.conditioner.get_unconditional_conditioning(
                     batch,
                     force_uc_zero_embeddings=ucg_keys
@@ -693,7 +710,12 @@ class ImageLogger(Callback):
                 # keep GPU until we have the generated latents
                 N = min(x.shape[0], self.max_images) # these only get the first N batches
                 x = x.to(pl_module.device)[:N]
-                z = pl_module.encode_first_stage(x) # identity; keep encoding on GPU (scales clean_latents using scale_factor)
+                if x.shape[-1] == 576:
+                    z = pl_module.encode_first_stage(x) # identity; keep encoding on GPU (scales clean_latents using scale_factor)
+                else:
+                    z = x # already clean latents
+
+                # get ic latents again
 
                 for k in c:
                     if isinstance(c[k], torch.Tensor):
