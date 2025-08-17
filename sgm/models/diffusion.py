@@ -166,7 +166,7 @@ class DiffusionEngine(pl.LightningModule):
         loss_dict = {"loss": loss_mean}
         return loss_mean, loss_dict
 
-    def _encode_inconsistent_images(self, paths: List[str], ref_mask: torch.Tensor) -> torch.Tensor:
+    def _encode_inconsistent_images(self, paths: List[str], ref_mask: torch.Tensor, clean_latent: torch.Tensor) -> torch.Tensor:
         # TODO: optimize such that we only encode images that are needed using ref_mask
         # load images from paths and convert to tensors
         latents = []
@@ -187,7 +187,10 @@ class DiffusionEngine(pl.LightningModule):
                 batch_tensor = torch.stack(batch_images).to(self.device)
                 latents.append(self.encode_first_stage(batch_tensor))
             latents = torch.cat(latents, dim=0)
-        return latents.reshape(-1, num_images, 4, 72, 72) # ! HARDCODED
+            latents = latents.reshape(-1, num_images, 4, 72, 72) # ! HARDCODED
+            # replace latents with clean latents for ref images
+            latents[ref_mask] = clean_latent[ref_mask]
+        return latents
 
     def shared_step(self, batch: Dict) -> Any: # TODO: check latents are precomputed or not; encode frames and ic images if not
         x = self.get_input(batch)
@@ -198,7 +201,9 @@ class DiffusionEngine(pl.LightningModule):
         # else: latents already precomputed (same as "IdentityEncoder")
 
         # encode ic latents from the paths
-        ic = self._encode_inconsistent_images(batch.pop("ic_paths"), batch["ref_mask"])
+        ic = self._encode_inconsistent_images(batch.pop("ic_paths"), batch["ref_mask"], batch["clean_latent"])
+
+        # ensure for ref image, ic tensors should be replaced by clean latents 
 
         # update replace with the clean latents
         # add ic as conditioning (along with clean + plucker + masks)

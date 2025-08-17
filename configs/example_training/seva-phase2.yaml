@@ -101,7 +101,7 @@ model:
       target: sgm.modules.diffusionmodules.loss.StandardDiffusionLoss
       params:
         loss_weighting_config:
-          target: sgm.modules.diffusionmodules.loss_weighting.SevaWeighting
+          target: sgm.modules.diffusionmodules.loss_weighting.SimVSWeighting
         sigma_sampler_config:
           target: sgm.modules.diffusionmodules.sigma_sampling.DiscreteSampling
           params:

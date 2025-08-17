@@ -36,6 +36,7 @@ class SevaWeighting(DiffusionLossWeighting):
         # * for phase 2, mask is now ref_mask (originally input_frames_mask)
         # NOTE: weights  are based on "dists", but indices are not necessarily 
         # ordered by distance from a reference frame
+        # if we want, we can sort them by distance from a reference frame within the mvhn_dataloader
         bools = mask.to(torch.bool)
         batch_size, N = bools.shape
         indices = torch.arange(N, device=bools.device).unsqueeze(0).expand(batch_size, N)
@@ -50,5 +51,30 @@ class SevaWeighting(DiffusionLossWeighting):
             else:
                 weights[b] = max_weight
 
+        return weights
+
+        
+class SimVSWeighting(DiffusionLossWeighting):
+    def __call__(self, sigma: torch.Tensor, mask, ref_mask, max_weight=5.0) -> torch.Tensor:
+        # * for phase 2, mask is now ref_mask (originally input_frames_mask)
+        # weight non-ref frames by a constant (1.0)
+        # additionally weight by a constant for ref frames
+        bools = mask.to(torch.bool)
+        ref_bools = ref_mask.to(torch.bool)
+        batch_size, N = bools.shape
+        indices = torch.arange(N, device=bools.device).unsqueeze(0).expand(batch_size, N)
+        weights = torch.full((batch_size, N), max_weight, dtype=torch.float, device=bools.device)
+        ref_weights = torch.ones_like(ref_bools) - ref_bools.astype(torch.float) # zero for ref frames, one for others
+        
+        for b in range(batch_size):
+            true_idx = indices[b][bools[b]]
+            if len(true_idx) > 0:
+                dists = torch.stack([torch.abs(indices[b] - t) for t in true_idx]).min(dim=0).values
+                dists[bools[b]] = 0
+                weights[b] = dists / dists.max() * max_weight
+            else:
+                weights[b] = max_weight
+
+        weights = weights + ref_weights
         return weights
 
