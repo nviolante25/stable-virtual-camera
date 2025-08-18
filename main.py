@@ -675,14 +675,16 @@ class ImageLogger(Callback):
                     ucg_keys = conditioner_input_keys
 
                 log = dict()
-                x = pl_module.get_input(batch) # clean_latent (if not provided, this maybe placeholder 0)
-                if len(x.shape) == 1: # latents are NOT computed yet
+                x = pl_module.get_input(batch) # clean_latent
+                if len(x.shape) == 1: # if latents are NOT computed yet, encode
                     x = batch["frames"].to(pl_module.device)
                     batch_latents = []
                     for b in x:
                         batch_latents.append(pl_module.encode_first_stage(b)) # scales automatically
                     x = torch.stack(batch_latents, dim=0)
-                    batch["clean_latent"] = x
+                else: 
+                    x = x * pl_module.scale_factor
+                batch["clean_latent"] = x
                 ic, rgb_ic = pl_module._encode_inconsistent_images(batch.pop("ic_paths"), batch["ref_mask"], x)    
 
                 # update the batch using this
@@ -717,10 +719,7 @@ class ImageLogger(Callback):
                 # keep GPU until we have the generated latents
                 N = min(x.shape[0], self.max_images) # these only get the first N batches
                 x = x.to(pl_module.device)[:N]
-                if x.shape[-1] == 576: # ! HARDCODED
-                    z = pl_module.encode_first_stage(x) # identity; keep encoding on GPU (scales clean_latents using scale_factor)
-                else:
-                    z = x * pl_module.scale_factor # already clean latents (need to scale)
+                z = x
 
                 for k in c:
                     if isinstance(c[k], torch.Tensor):

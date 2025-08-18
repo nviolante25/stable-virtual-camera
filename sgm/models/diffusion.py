@@ -187,7 +187,7 @@ class DiffusionEngine(pl.LightningModule):
                     img_tensor = transform(img)
                     batch_images.append(img_tensor)
                 batch_tensor = torch.stack(batch_images).to(self.device)
-                rgb_images.append((batch_tensor * 0.5 + 0.5).to(self.device))
+                rgb_images.append(batch_tensor.to(self.device)) # leave normalized
                 latents.append(self.encode_first_stage(batch_tensor))
             latents = torch.cat(latents, dim=0)
             latents = latents.reshape(-1, num_images, 4, 72, 72) # ! HARDCODED
