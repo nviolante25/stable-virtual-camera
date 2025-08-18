@@ -683,7 +683,7 @@ class ImageLogger(Callback):
                         batch_latents.append(pl_module.encode_first_stage(b)) # scales automatically
                     x = torch.stack(batch_latents, dim=0)
                     batch["clean_latent"] = x
-                ic = pl_module._encode_inconsistent_images(batch.pop("ic_paths"), batch["ref_mask"], x)    
+                ic, rgb_ic = pl_module._encode_inconsistent_images(batch.pop("ic_paths"), batch["ref_mask"], x)    
 
                 # update the batch using this
                 batch.update({
@@ -736,9 +736,9 @@ class ImageLogger(Callback):
                 z = z.to("cpu")
                 samples = samples.to("cpu")
                 gt_images = batch["frames"][:N].to("cpu") # choose first N from B
-                ic = ic[:N].to("cpu")
+                rgb_ic = rgb_ic[:N].to("cpu")
                 ref_mask = batch["ref_mask"][:N].to("cpu")
-                gt_images[~ref_mask] = ic[~ref_mask]
+                gt_images[~ref_mask] = rgb_ic[~ref_mask]
 
                 # unlike in original impl., we have yet to decode the latents; hence, pre-image
                 pre_images = {}

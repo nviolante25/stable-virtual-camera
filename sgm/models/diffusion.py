@@ -170,10 +170,12 @@ class DiffusionEngine(pl.LightningModule):
         # TODO: optimize such that we only encode images that are needed using ref_mask
         # load images from paths and convert to tensors
         latents = []
+        rgb_images = []
         num_images = len(paths)
         with torch.no_grad():
             for batch in list(zip(*paths)): # assumes these are already (576,576)
                 batch_images = []
+                batch_rgb = []
                 for path in batch:
                     img = Image.open(path).convert('RGB')
                     # Apply same transforms as your dataloader
@@ -185,12 +187,14 @@ class DiffusionEngine(pl.LightningModule):
                     img_tensor = transform(img)
                     batch_images.append(img_tensor)
                 batch_tensor = torch.stack(batch_images).to(self.device)
+                rgb_images.append((batch_tensor * 0.5 + 0.5).to(self.device))
                 latents.append(self.encode_first_stage(batch_tensor))
             latents = torch.cat(latents, dim=0)
             latents = latents.reshape(-1, num_images, 4, 72, 72) # ! HARDCODED
             # replace latents with clean latents for ref images
             latents[ref_mask] = clean_latent[ref_mask]
-        return latents
+            rgb_images = torch.cat(rgb_images, dim=0).reshape(-1, num_images, 3, 576, 576)
+        return latents, rgb_images
 
     def shared_step(self, batch: Dict) -> Any: 
         x = self.get_input(batch)
@@ -205,7 +209,7 @@ class DiffusionEngine(pl.LightningModule):
             batch["clean_latent"] = x * self.scale_factor # need to scale!
 
         # encode ic latents from the paths (scales)
-        ic = self._encode_inconsistent_images(batch.pop("ic_paths"), batch["ref_mask"], batch["clean_latent"])
+        ic, _ = self._encode_inconsistent_images(batch.pop("ic_paths"), batch["ref_mask"], batch["clean_latent"])
 
         # ensure for ref image, ic tensors should be replaced by clean latents 
         # add ic as conditioning in concat (along with clean + plucker + masks)
