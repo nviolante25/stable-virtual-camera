@@ -109,8 +109,9 @@ class MVHumanNetDataset(Dataset):
         data_limit=None,
         only_include=None,
         random_crop=False,
+        maximal_crop=False,
         white_background=False,
-        step_size=20,
+        step_size=60,
         preload_path=None,
         synthetic_dataset_path=None,
     ):
@@ -125,6 +126,10 @@ class MVHumanNetDataset(Dataset):
         self.random_crop = random_crop       # NOTE: this is the toggle for probabilistic cropping 
                                              # ! unrelated to initial crop from crop_params.json
                                              # ! (human-centered 576x576 image crop) 
+        self.maximal_crop = maximal_crop     # initial crops to the human based on annots
+        # NOTE: if this is set to True, then latents_dir will be ignored
+        # and latents will be computed on the fly!
+
         self.adjacent_frame_sampling_prob = 0.2 # Trajectory NVS acceptance rate
         self.white_background = white_background
         self.preload_path = preload_path
@@ -518,7 +523,7 @@ class MVHumanNetDataset(Dataset):
         # frames = torch.stack(frames, dim=0) # resize to 576x576 normalized [-1, 1] image tensorss
 
         # load latents if we provided a path
-        if self.latents_dir is not None and os.path.exists(os.path.join(self.latents_dir, subject_id, f"{subject_id}.npz")):
+        if self.latents_dir is not None and os.path.exists(os.path.join(self.latents_dir, subject_id, f"{subject_id}.npz")) and not self.maximal_crop:
             npz_file = os.path.join(self.latents_dir, subject_id, f"{subject_id}.npz")
             # npz_data = np.load(npz_file) # this is already for the current subject
             with np.load(npz_file) as npz_data:

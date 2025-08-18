@@ -6,12 +6,13 @@ from seva.data.preprocessing import update_intrinsics, get_bbox_center_and_size
 
 # NOTE: this should be applied to the OUTPUT 576x576 image shape AFTER initial cropping!
 class RandomBBoxCropper(object):
-    def __init__(self, crop_size_bounds=None):
+    def __init__(self, random_crop=True, crop_size_bounds=None):
         """
         Random (Gaussian) crop transform centered around a 2D bounding box.
         NOTE: images are NOT resized to (576, 576) here!
         """
         self.crop_size_bounds = crop_size_bounds # (min_crop_size, max_crop_size)
+        self.random_crop = random_crop
 
     def _get_crop_params(
         self, 
@@ -45,8 +46,6 @@ class RandomBBoxCropper(object):
         H = options["H"] # of IMAGE (not bbox)
         B = bbox.shape[0] # batch size
 
-        # random params
-
         # get initial bbox params
         center, size = get_bbox_center_and_size(bbox)
         centers = torch.stack(center, dim=1) # (B, 2)
@@ -54,43 +53,49 @@ class RandomBBoxCropper(object):
         center_x, center_y = centers.T # (B, 2)
         bbox_W, bbox_H = sizes.T # (B, 2)
 
-        # sampling distribution parameters
-        center_mean    = options.get("center_mean", centers)
-        center_std     = options.get("center_std", torch.stack([(W - bbox_W) / 6, (H - bbox_H) / 6], dim=1))
-        crop_size_mean = options.get("crop_size_mean", (bbox_W + bbox_H) // 2)
-        crop_size_std  = options.get("crop_size_std", (bbox_W + bbox_H) / 6)
-        longest_dim    = torch.max(bbox_W, bbox_H)
-        min_crop_size  = options.get("min_crop_size", longest_dim // 2) # half of the larger dimension
+        if self.random_crop:
 
-        # transform all to absolute pixel values (for crop_size, based on min(H,W))
-        # mean should be WITHIN the bbox
-        center_mean    = percent_to_absolute(center_mean, torch.tensor([H, W]))
-        center_std     = torch.as_tensor(center_std)
-        crop_size_mean = percent_to_absolute(crop_size_mean, torch.tensor([min(H, W)]))
-        crop_size_std  = torch.as_tensor(crop_size_std)
+            # sampling distribution parameters
+            center_mean    = options.get("center_mean", centers)
+            center_std     = options.get("center_std", torch.stack([(W - bbox_W) / 6, (H - bbox_H) / 6], dim=1))
+            crop_size_mean = options.get("crop_size_mean", (bbox_W + bbox_H) // 2)
+            crop_size_std  = options.get("crop_size_std", (bbox_W + bbox_H) / 6)
+            longest_dim    = torch.max(bbox_W, bbox_H)
+            min_crop_size  = options.get("min_crop_size", longest_dim // 2) # half of the larger dimension
 
-        # * sample new center and length of crop
-        max_bound = torch.cat((torch.ones(B,1) * W, torch.ones(B,1) * H), dim=1) - (min_crop_size.reshape(-1, 1) // 2)
-        center_sample = torch.clamp(
-            torch.randn(B, 2) * center_std + center_mean, 
-            min=torch.zeros_like(longest_dim).unsqueeze(1), 
-            max=max_bound
-        )
-        size_sample = torch.clamp(torch.randn(B) * crop_size_std + crop_size_mean, min=min_crop_size, max=longest_dim)
+            # transform all to absolute pixel values (for crop_size, based on min(H,W))
+            # mean should be WITHIN the bbox
+            center_mean    = percent_to_absolute(center_mean, torch.tensor([H, W]))
+            center_std     = torch.as_tensor(center_std)
+            crop_size_mean = percent_to_absolute(crop_size_mean, torch.tensor([min(H, W)]))
+            crop_size_std  = torch.as_tensor(crop_size_std)
 
-        if self.crop_size_bounds is not None:
-            size_sample = torch.clamp(
-                size_sample,
-                min=percent_to_absolute(self.crop_size_bounds[0], torch.tensor([min(H, W)])),
-                max=percent_to_absolute(self.crop_size_bounds[1], torch.tensor([min(H, W)]))
+            # * sample new center and length of crop
+            max_bound = torch.cat((torch.ones(B,1) * W, torch.ones(B,1) * H), dim=1) - (min_crop_size.reshape(-1, 1) // 2)
+            center_sample = torch.clamp(
+                torch.randn(B, 2) * center_std + center_mean, 
+                min=torch.zeros_like(longest_dim).unsqueeze(1), 
+                max=max_bound
             )
-        
-        # calculate crop coordinates of NEW post-sampled crop
-        # center_x, center_y = map(int, center_sample)
-        center_sample = center_sample.int()
-        crop_size = torch.maximum(size_sample.int(), min_crop_size)
+            size_sample = torch.clamp(torch.randn(B) * crop_size_std + crop_size_mean, min=min_crop_size, max=longest_dim)
 
-        center_x, center_y = center_sample.T
+            if self.crop_size_bounds is not None:
+                size_sample = torch.clamp(
+                    size_sample,
+                    min=percent_to_absolute(self.crop_size_bounds[0], torch.tensor([min(H, W)])),
+                    max=percent_to_absolute(self.crop_size_bounds[1], torch.tensor([min(H, W)]))
+                )
+            
+            # calculate crop coordinates of NEW post-sampled crop
+            # center_x, center_y = map(int, center_sample)
+            center_sample = center_sample.int()
+            crop_size = torch.maximum(size_sample.int(), min_crop_size)
+
+            center_x, center_y = center_sample.T
+        else:
+            crop_size = torch.maximum(bbox_W.int(), bbox_H.int())
+        
+        # if not random crop, then here, center_x and center_y are the "means"
 
         # "clamp" center within initial bbox, ensuring positive optical centers
         c1, c2 = K[0, 2], K[1, 2] # ! assumes same intrinsics
