@@ -502,7 +502,11 @@ class MVHumanNetDataset(Dataset):
             # crop_config = {
             #     "center_mean": torch.mean(face_params.reshape(-1,2,2).permute(0,2,1), dim=2),
             # }
-            frames, Ks = self.cropper(frames, bbox_params, torch.from_numpy(intrinsics).float())
+            frames, Ks, rel_bbox = self.cropper(frames, bbox_params, torch.from_numpy(intrinsics).float())
+            # NOTE: rel_bbox is the delta from the deterministic crop to the random crop
+            # this would then be all 0 if not using random_crop
+            # for ic-light, we would later need to scale these by the scale factor (1024->576)
+            
             # later, we resize using transform, so we update cropped intrinsics here accordingly
             scale = np.array([self.target_shape[0] / cropped_img.shape[-2] for cropped_img in frames])
             Ks = update_intrinsics_resize(Ks, scale)
@@ -601,13 +605,14 @@ class MVHumanNetDataset(Dataset):
                 "mask": input_frames_mask,
                 "ref_mask": ref_mask, # "one hot" mask for reference images 
                 "ic_paths": ic_paths, # synthetic data paths
+                "ic_bbox": rel_bbox, # for cropping ic latents
                 "plucker": pluckers,
                 "camera_mask": camera_mask,
                 "concat": concat,
                 "frames": frames,
                 "replace": replace, # contains pre-scaled clean latents!
                 "c2w": c2ws,
-                "K": Ks,
+                "K": Ks
             }
         except Exception as e:
             print(f"Error creating output_dict: {e}")

@@ -166,25 +166,36 @@ class DiffusionEngine(pl.LightningModule):
         loss_dict = {"loss": loss_mean}
         return loss_mean, loss_dict
 
-    def _encode_inconsistent_images(self, paths: List[str], ref_mask: torch.Tensor, clean_latent: torch.Tensor) -> torch.Tensor:
+    def _encode_inconsistent_images(
+        self,
+        paths: List[str],
+        ref_mask: torch.Tensor,
+        clean_latent: torch.Tensor,
+        rel_bbox: torch.Tensor
+    ) -> torch.Tensor:
+
         # TODO: optimize such that we only encode images that are needed using ref_mask
         # load images from paths and convert to tensors
         latents = []
         rgb_images = []
         num_images = len(paths)
         with torch.no_grad():
-            for batch in list(zip(*paths)): # assumes these are already (576,576)
+            for i, batch in enumerate(list(zip(*paths))): # assumes these are already (576,576)
                 batch_images = []
                 batch_rgb = []
-                for path in batch:
+                for j, path in enumerate(batch): # for each image in the batch
                     img = Image.open(path).convert('RGB')
+                    W, H = img.size
                     # Apply same transforms as your dataloader
                     transform = T.Compose([
                         T.Resize((576, 576)),
                         T.ToTensor(),
                         T.Normalize([0.5], [0.5])  # Scale to [-1, 1]
                     ])
+                    scale = 576 / max(W, H)
+                    x1, y1, x2, y2 = (rel_bbox[i, j] * scale).int()
                     img_tensor = transform(img)
+                    img_tensor = img_tensor[:, x1:x2, y1:y2]
                     batch_images.append(img_tensor)
                 batch_tensor = torch.stack(batch_images).to(self.device)
                 rgb_images.append(batch_tensor.to(self.device)) # leave normalized
