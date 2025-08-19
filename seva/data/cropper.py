@@ -160,7 +160,7 @@ class RandomBBoxCropper(object):
             "relative_bbox": rel_bbox # (B, 4)
         }
 
-    def _possibly_pad_img_and_update_K(self, images, K, x1, y1, x2, y2, rel_bbox):
+    def _possibly_pad_img(self, images, x1, y1, x2, y2):
         """
         Pad the image if the crop parameters extend beyond the image.
         """
@@ -173,33 +173,27 @@ class RandomBBoxCropper(object):
         
         # if the new crop parameters extend beyond the image, pad the image
         if torch.any(pad_left > 0) or torch.any(pad_top > 0) or torch.any(pad_right > 0) or torch.any(pad_bottom > 0):
-            print("Crop parameters extend beyond the image! (not allowed for now)")
-            padding = [pad_left, pad_top, pad_right, pad_bottom]
-            images = torch.nn.functional.pad(images, padding, mode="constant", value=0)
-            
-            # Adjust crop coordinates
-            x1, x2 = x1 + pad_left, x2 + pad_left
-            y1, y2 = y1 + pad_top, y2 + pad_top
+            print("WARNING: Crop parameters extend beyond the image!")
+            image_list = []
+            padding = torch.stack([pad_left.int(), pad_top.int(), pad_right.int(), pad_bottom.int()], dim=1)
 
-            rel_bbox[:, 0] += pad_left
-            rel_bbox[:, 1] += pad_top
-            rel_bbox[:, 2] += pad_left
-            rel_bbox[:, 3] += pad_top
-            
-            # and then update the intrinsics from padding (left or top; 
-            # (negative because negative cropping is positive padding)
-            # if right/bottom, no need to update intrinsics
-            K_new = update_intrinsics(
-                K,
-                crop_x=-pad_left,
-                crop_y=-pad_top,
-                scale=1,
-                crop_first=False,
-                padding_mode=True
-            )
-            return images, K_new, rel_bbox
+            # images is a list of different sized images, so need to iterate separately
+            for i, image in enumerate(images):
+                image = torch.nn.functional.pad(image, padding[i].tolist(), mode="constant", value=0)
+                image_list.append(image) # keep list since padding is different for each image
+
+            # ! already done in get_crop_params
+            # K_new = update_intrinsics(
+            #     K,
+            #     crop_x=-pad_left,
+            #     crop_y=-pad_top,
+            #     scale=1,
+            #     crop_first=False,
+            #     padding_mode=True
+            # )
+            return image_list
         else:
-            return images, K, rel_bbox
+            return images
 
     def __call__(
         self, 
@@ -236,16 +230,14 @@ class RandomBBoxCropper(object):
         # get new crop coordinates
         x1, y1, x2, y2 = bbox.T
         
-        # if negative coordinates, need to pad the image and update K (should never happen)
-        images, K_new, rel_bbox = self._possibly_pad_img_and_update_K(
-            images, K_new, x1, y1, x2, y2, rel_bbox)
-        images_ = torch.as_tensor(images) 
+        # if negative coordinates, need to pad the image (K already previously updated)
+        images = self._possibly_pad_img(images, x1, y1, x2, y2)
+        # images_ = torch.as_tensor(images) -- images may have different H, W, so can't stack
 
         # perform the actual crop
-        batch_size = images_.shape[0]
         cropped_images = []
-        for i in range(batch_size):
-            cropped_img = images_[i, :, int(y1[i]):int(y2[i]), int(x1[i]):int(x2[i])]
+        for i in range(len(images)):
+            cropped_img = images[i][:, int(y1[i]):int(y2[i]), int(x1[i]):int(x2[i])]
             cropped_images.append(cropped_img)
 
         return cropped_images, K_new, rel_bbox
