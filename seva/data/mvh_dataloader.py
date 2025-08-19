@@ -249,7 +249,7 @@ class MVHumanNetDataset(Dataset):
 
             # build frames_info for each timestep, camera combination
             # NOTE: num_timesteps is based on the FIRST camera; some subjects have differing numbers of timesteps for their cameras!
-            iterator = range(1, num_timesteps, step_size) if isinstance(num_timesteps, int) else num_timesteps
+            iterator = range(1, num_timesteps, self.step_size) if isinstance(num_timesteps, int) else num_timesteps
             is_list_type = isinstance(num_timesteps, list)
             for timestep in iterator:
                 try: # to get all cameras for this timestep (and ENSURE all cameras are present)
@@ -273,7 +273,7 @@ class MVHumanNetDataset(Dataset):
                     break 
 
             sorted_timesteps = sorted(subject_map.keys())
-            for i in range(0, len(sorted_timesteps), step_size):
+            for i in range(0, len(sorted_timesteps)):
                 timestep = sorted_timesteps[i]
                 frames_info = subject_map[timestep]
 
@@ -372,7 +372,7 @@ class MVHumanNetDataset(Dataset):
                     continue
             
             sorted_timesteps = sorted(subject_map.keys())
-            for i in range(0, len(sorted_timesteps), self.step_size):
+            for i in range(0, len(sorted_timesteps)):
                 timestep = sorted_timesteps[i]
                 frames_info = subject_map[timestep]
 
