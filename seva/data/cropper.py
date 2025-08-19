@@ -138,7 +138,7 @@ class RandomBBoxCropper(object):
 
         # * update intrinsics
         if len(K.shape) == 2: # repeat original K (3,3) to (B, 3, 3)
-            K_ = torch.tensor(repeat(K, 'd1 d2 -> n d1 d2', n=B))
+            K_ = repeat(K, 'd1 d2 -> n d1 d2', n=B).detach().clone()
 
         K_new = update_intrinsics(
             torch.as_tensor(K_), 
@@ -151,7 +151,7 @@ class RandomBBoxCropper(object):
 
         # scale crop coordinates to to canonical 576^2
         scale = 576.0 / bbox_max_dim
-        rel_bbox = (rel_bbox * scale).int()
+        rel_bbox = (rel_bbox * scale.view(-1, 1)).int()
 
         # crop parameters, updated intrinsics
         return {
@@ -173,7 +173,7 @@ class RandomBBoxCropper(object):
         
         # if the new crop parameters extend beyond the image, pad the image
         if torch.any(pad_left > 0) or torch.any(pad_top > 0) or torch.any(pad_right > 0) or torch.any(pad_bottom > 0):
-            raise ValueError("Crop parameters extend beyond the image! (not allowed for now)")
+            print("Crop parameters extend beyond the image! (not allowed for now)")
             padding = [pad_left, pad_top, pad_right, pad_bottom]
             images = torch.nn.functional.pad(images, padding, mode="constant", value=0)
             
@@ -197,7 +197,9 @@ class RandomBBoxCropper(object):
                 crop_first=False,
                 padding_mode=True
             )
-        return images, K_new, rel_bbox
+            return images, K_new, rel_bbox
+        else:
+            return images, K, rel_bbox
 
     def __call__(
         self, 

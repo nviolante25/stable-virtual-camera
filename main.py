@@ -685,7 +685,7 @@ class ImageLogger(Callback):
                 else: 
                     x = x * pl_module.scale_factor
                 batch["clean_latent"] = x
-                ic, rgb_ic = pl_module._encode_inconsistent_images(batch.pop("ic_paths"), batch["ref_mask"], x)    
+                ic, rgb_ic = pl_module._encode_inconsistent_images(batch.pop("ic_paths"), batch["ref_mask"], x, batch["ic_bbox"])    
 
                 # update the batch using this
                 batch.update({

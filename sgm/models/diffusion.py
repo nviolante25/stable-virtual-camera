@@ -171,7 +171,7 @@ class DiffusionEngine(pl.LightningModule):
         paths: List[str],
         ref_mask: torch.Tensor,
         clean_latent: torch.Tensor,
-        rel_bbox: torch.Tensor
+        rel_bbox: torch.Tensor,
     ) -> torch.Tensor:
 
         # TODO: optimize such that we only encode images that are needed using ref_mask
@@ -182,20 +182,18 @@ class DiffusionEngine(pl.LightningModule):
         with torch.no_grad():
             for i, batch in enumerate(list(zip(*paths))): # assumes these are already (576,576)
                 batch_images = []
-                batch_rgb = []
                 for j, path in enumerate(batch): # for each image in the batch
                     img = Image.open(path).convert('RGB')
-                    W, H = img.size
                     # Apply same transforms as your dataloader
                     transform = T.Compose([
                         T.Resize((576, 576)),
                         T.ToTensor(),
                         T.Normalize([0.5], [0.5])  # Scale to [-1, 1]
                     ])
-                    scale = 576 / max(W, H)
-                    x1, y1, x2, y2 = (rel_bbox[i, j] * scale).int()
+                    dx1, dy1, dx2, dy2 = rel_bbox[i, j].int()
                     img_tensor = transform(img)
-                    img_tensor = img_tensor[:, x1:x2, y1:y2]
+                    _, H, W = img_tensor.shape
+                    img_tensor = img_tensor[:, 0+dy1:H+dy2, 0+dx1:W+dx2]
                     batch_images.append(img_tensor)
                 batch_tensor = torch.stack(batch_images).to(self.device)
                 rgb_images.append(batch_tensor.to(self.device)) # leave normalized
@@ -220,7 +218,7 @@ class DiffusionEngine(pl.LightningModule):
             batch["clean_latent"] = x * self.scale_factor # need to scale!
 
         # encode ic latents from the paths (scales)
-        ic, _ = self._encode_inconsistent_images(batch.pop("ic_paths"), batch["ref_mask"], batch["clean_latent"])
+        ic, _ = self._encode_inconsistent_images(batch.pop("ic_paths"), batch["ref_mask"], batch["clean_latent"], batch["ic_bbox"])
 
         # ensure for ref image, ic tensors should be replaced by clean latents 
         # add ic as conditioning in concat (along with clean + plucker + masks)

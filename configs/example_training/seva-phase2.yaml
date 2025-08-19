@@ -10,9 +10,9 @@ model:
     scheduler_config:
       target: sgm.lr_scheduler.LambdaLinearScheduler
       params:
-        warm_up_steps: [1000]
+        warm_up_steps: [1]
         cycle_lengths: [10000000000000]
-        f_start: [0.1]
+        f_start: [1.]
         f_max: [1.]
         f_min: [1.]
 
@@ -137,7 +137,7 @@ data:
     num_workers: 8
     num_images: 8
     step_size: 60
-    only_include: ["100001", "100002", "100003", "100004", "100005", "100006", "100007", "100008"]
+    only_include: "100001-100100"
     preload_path: /workspace/datasetvol/mvhuman_data/mv_captures/preloaded_filepaths.json
 # data:
 #   target: sgm.data.dataset.DL3DVDataModuleFromConfig
@@ -169,7 +169,7 @@ lightning:
         enable_autocast: False
         batch_frequency: 100
         max_images: 8
-        increase_log_steps: True
+        increase_log_steps: False
         log_first_step: False
         log_images_kwargs:
           use_ema_scope: False
