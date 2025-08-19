@@ -108,6 +108,7 @@ class MVHumanNetDataset(Dataset):
         pre_scale=0.5,
         data_limit=None,
         only_include=None,
+        exclude=None,
         random_crop=False,
         maximal_crop=False,
         white_background=False,
@@ -121,7 +122,8 @@ class MVHumanNetDataset(Dataset):
         self.num_images = num_images         # context window T
         self.transforms = transforms         # transforms for the random crop
         self.pre_scale = pre_scale           # since MVHumanNet is downsampled, update intrinsics
-        self.only_include = only_include     # TEMP -- include only these subjects (as List of strings)
+        self.only_include = set(only_include) if only_include is not None else None     # TEMP -- include only these subjects (as List of strings)
+        self.exclude = set(exclude) if exclude is not None else None               # TEMP -- exclude these subjects (as List of strings)
         self.data_limit = data_limit         # TEMP -- only get the first 'data_limit' (int) subjects
         self.step_size = step_size           # only processes every 'step_size' frames (timesteps)
         self.random_crop = random_crop       # NOTE: this is the toggle for probabilistic cropping 
@@ -220,6 +222,8 @@ class MVHumanNetDataset(Dataset):
             subject_path = os.path.join(self.root_dir, subject)
             if self.only_include is not None and subject not in self.only_include:
                 continue
+            if self.exclude is not None and subject in self.exclude:
+                continue  # exclude the given subjects
             if self.data_limit is not None and i >= self.data_limit:
                 break
             if (subjects_with_latents is not None and subject not in subjects_with_latents) or len(subjects[subject]['cameras']) != 48:
@@ -258,13 +262,18 @@ class MVHumanNetDataset(Dataset):
                         image_path = os.path.join(subject_path, "images_lr", camera, f"{time_id}_img.jpg")
                         mask_path = os.path.join(subject_path, "fmask_lr", camera, f"{time_id}_img_fmask.png")
                         # annots_path = os.path.join(subject_path, "annots", camera, f"{time_id}_img.json")
+                        bbox = annots['bbox'][camera][time_id]
+                        face_bbox = annots['bbox_face2d'][camera][time_id]
+                        if (bbox[2] - bbox[0]) == 0 or (bbox[3] - bbox[1]) == 0:
+                            print(f"Skipping subject {subject} camera {camera} timestep {timestep} because bbox is invalid")
+                            continue
 
                         subject_map[time_id][camera] = {
                                     'image_path': image_path,
                                     'mask_path': mask_path,
                                     'annots': {
-                                        'bbox': annots['bbox'][camera][time_id],
-                                        'bbox_face': annots['bbox_face2d'][camera][time_id]
+                                        'bbox': bbox,
+                                        'bbox_face': face_bbox
                                     }
                                 }
                 except Exception as e: # NOTE: this is a hack to ignore missing timesteps
@@ -321,6 +330,8 @@ class MVHumanNetDataset(Dataset):
                 continue
             if self.only_include is not None and subject not in self.only_include:
                 continue  # include the given subjects only
+            if self.exclude is not None and subject in self.exclude:
+                continue  # exclude the given subjects
 
             # get subject metadata
             # NOTE: for MVHumanNet, all cameras have the same intrinsics
@@ -359,6 +370,9 @@ class MVHumanNetDataset(Dataset):
                             annots_json = load_json(os.path.join(annots_path, camera, f"{timestep}_img.json"))['annots'][0]
                             bbox = annots_json['bbox']
                             bbox_face = annots_json['bbox_face2d']
+                            if bbox[2] - bbox[0] == 0 or bbox[3] - bbox[1] == 0:
+                                print(f"Skipping subject {subject} camera {camera} timestep {timestep} because bbox is invalid")
+                                continue
                             subject_map[timestep][camera] = {
                                 'image_path': entry.path,
                                 'mask_path': os.path.join(masks_path, camera, f"{timestep}_img_fmask.png"),
@@ -395,7 +409,6 @@ class MVHumanNetDataset(Dataset):
         timestep = scene['timestep'] # ex. 0005
         frames_info = dict(sorted(scene['frames_info'].items())) # camera dict
         subject_path = os.path.join(self.root_dir, subject_id)
-        print(f"subject id: {subject_id}, timestep: {timestep}")
 
         # get camera parameters
         extrinsics = self.cam_params[subject_id]['extrinsics']
@@ -508,12 +521,16 @@ class MVHumanNetDataset(Dataset):
             # for ic-light, we would later need to scale these by the scale factor (1024->576)
             
             # later, we resize using transform, so we update cropped intrinsics here accordingly
-            scale = np.array([self.target_shape[0] / cropped_img.shape[-2] for cropped_img in frames])
-            Ks = update_intrinsics_resize(Ks, scale)
-            Ks = normalize_intrinsics(Ks, self.target_shape[0], self.target_shape[1]) # normalize intrinsics (H,W)
-            if len(Ks.shape) == 2: # if one shared intrinsic matrix, then repeat it for all
-                Ks = repeat(Ks, 'd1 d2 -> n d1 d2', n=self.num_images)
-            Ks = torch.from_numpy(Ks).float()
+            try:
+                scale = np.array([self.target_shape[0] / cropped_img.shape[-2] for cropped_img in frames])
+                Ks = update_intrinsics_resize(Ks, scale)
+                Ks = normalize_intrinsics(Ks, self.target_shape[0], self.target_shape[1]) # normalize intrinsics (H,W)
+                if len(Ks.shape) == 2: # if one shared intrinsic matrix, then repeat it for all
+                    Ks = repeat(Ks, 'd1 d2 -> n d1 d2', n=self.num_images)
+                Ks = torch.from_numpy(Ks).float()
+            except Exception as e:
+                print(f"[{subject_id}, {timestep}] Error {e}")
+
         else: # simply CenterCrop
             # if CenterCrop, then crop original size image to square
             min_dim = min(*self.image_shape)
@@ -527,12 +544,15 @@ class MVHumanNetDataset(Dataset):
 
         # NOTE: the behavior of transform will change depending on whether random crop is used
         # frames = [self.transform(frame) for frame in frames]
-        if self.random_crop or self.maximal_crop:
-            frames = [self.transform(frame) for frame in frames]
-            frames = torch.stack(frames, dim=0)
-        else:
-            frames = self.transform(frames)
-            # frames = torch.stack(frames, dim=0) # resize to 576x576 normalized [-1, 1] image tensorss
+        try:
+            if self.random_crop or self.maximal_crop:
+                frames = [self.transform(frame) for frame in frames]
+                frames = torch.stack(frames, dim=0)
+            else:
+                frames = self.transform(frames)
+                # frames = torch.stack(frames, dim=0) # resize to 576x576 normalized [-1, 1] image tensors
+        except Exception as e:
+            print(f"[{subject_id}, {timestep}] Error {e}")
 
         # load latents if we provided a path
         if self.latents_dir is not None and os.path.exists(os.path.join(self.latents_dir, subject_id, f"{subject_id}.npz")) and not self.maximal_crop:
@@ -633,6 +653,7 @@ class MVHumanNetLoader(pl.LightningDataModule):
         image_size: int = 576,
         data_limit: int = None,
         only_include: list = None,
+        exclude: list = None,
         step_size: int = 150,
         preload_path: str = None,
         synthetic_dataset_path: str = None,
@@ -649,6 +670,7 @@ class MVHumanNetLoader(pl.LightningDataModule):
         self.shuffle = shuffle
         self.data_limit = data_limit
         self.only_include = only_include
+        self.exclude = exclude
         self.step_size = step_size
         self.preload_path = preload_path
         self.synthetic_dataset_path = synthetic_dataset_path
@@ -680,6 +702,7 @@ class MVHumanNetLoader(pl.LightningDataModule):
                 transforms=self.transform,
                 data_limit=self.data_limit,
                 only_include=self.only_include,
+                exclude=self.exclude,
                 step_size=self.step_size,
                 preload_path=self.preload_path,
                 synthetic_dataset_path=self.synthetic_dataset_path,
@@ -702,6 +725,7 @@ class MVHumanNetLoader(pl.LightningDataModule):
                 transforms=self.transform,
                 data_limit=self.data_limit,
                 only_include=self.only_include,
+                exclude=self.exclude,
                 step_size=self.step_size,
                 preload_path=self.preload_path,
                 synthetic_dataset_path=self.synthetic_dataset_path,

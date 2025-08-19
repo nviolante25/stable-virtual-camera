@@ -173,9 +173,9 @@ class RandomBBoxCropper(object):
         
         # if the new crop parameters extend beyond the image, pad the image
         if torch.any(pad_left > 0) or torch.any(pad_top > 0) or torch.any(pad_right > 0) or torch.any(pad_bottom > 0):
-            print("WARNING: Crop parameters extend beyond the image!")
+            # print("WARNING: Crop parameters extend beyond the image!")
             image_list = []
-            padding = torch.stack([pad_left.int(), pad_top.int(), pad_right.int(), pad_bottom.int()], dim=1)
+            padding = torch.stack([pad_left.int(), pad_right.int(), pad_top.int(), pad_bottom.int()], dim=1)
 
             # images is a list of different sized images, so need to iterate separately
             for i, image in enumerate(images):
@@ -191,9 +191,10 @@ class RandomBBoxCropper(object):
             #     crop_first=False,
             #     padding_mode=True
             # )
-            return image_list
+            new_bbox = torch.stack([x1 + pad_left, y1 + pad_top, x2, y2], dim=1)
+            return image_list, new_bbox
         else:
-            return images
+            return images, torch.stack([x1, y1, x2, y2], dim=1)
 
     def __call__(
         self, 
@@ -231,8 +232,7 @@ class RandomBBoxCropper(object):
         x1, y1, x2, y2 = bbox.T
         
         # if negative coordinates, need to pad the image (K already previously updated)
-        images = self._possibly_pad_img(images, x1, y1, x2, y2)
-        # images_ = torch.as_tensor(images) -- images may have different H, W, so can't stack
+        images, bbox = self._possibly_pad_img(images, x1, y1, x2, y2)
 
         # perform the actual crop
         cropped_images = []
