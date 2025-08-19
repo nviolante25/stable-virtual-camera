@@ -660,6 +660,13 @@ class MVHumanNetLoader(pl.LightningDataModule):
         #     T.ToTensor(),
         # ])
         self.transform = None # let corresponding Dataset handle this
+        if isinstance(self.only_include, str): # in the format ex: "100001-102000,102020-104000"
+            self.only_include = self.only_include.split(",")
+            expanded_includes = []
+            for subrange in self.only_include:
+                start, end = [int(num) for num in subrange.split("-")]
+                expanded_includes.extend([str(i).zfill(6) for i in range(start, end + 1)])
+            self.only_include = expanded_includes
 
     def setup(self, stage: Optional[str] = None):
         print("setup of DATALOADER")
