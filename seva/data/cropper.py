@@ -6,13 +6,20 @@ from seva.data.preprocessing import update_intrinsics, get_bbox_center_and_size
 
 # NOTE: this should be applied to the OUTPUT 576x576 image shape AFTER initial cropping!
 class RandomBBoxCropper(object):
-    def __init__(self, random_crop=True, crop_size_bounds=None):
+    def __init__(self, random_crop=True, crop_size_bounds=None, padding=[0,0,0,0]):
         """
         Random (Gaussian) crop transform centered around a 2D bounding box.
         NOTE: images are NOT resized to (576, 576) here!
+        - padding: [left, top, right, bottom] (in pixels)
         """
         self.crop_size_bounds = crop_size_bounds # (min_crop_size, max_crop_size)
-        self.random_crop = random_crop
+        self.random_crop = random_crop # if maximal_crop only, then should be False
+        if isinstance(padding, int) or isinstance(padding, float):
+            self.padding = [padding, padding, padding, padding]
+        elif isinstance(padding, list):
+            self.padding = padding
+        else:
+            raise ValueError(f"Invalid padding type: {type(padding)}")
 
     def _get_crop_params(
         self, 
@@ -103,6 +110,12 @@ class RandomBBoxCropper(object):
         y1 = torch.clamp(center_y - (crop_size // 2), min=0, max=c2).int()
         x2 = torch.clamp(center_x + (crop_size // 2), min=0, max=W).int()
         y2 = torch.clamp(center_y + (crop_size // 2), min=0, max=H).int()
+
+        # add padding here (but only within bounds)
+        x1 = torch.clamp(x1 - self.padding[0], min=0, max=W)
+        y1 = torch.clamp(y1 - self.padding[1], min=0, max=H)
+        x2 = torch.clamp(x2 + self.padding[2], min=0, max=W)
+        y2 = torch.clamp(y2 + self.padding[3], min=0, max=H)
         
         # if crop size has changed, add the rest to x2 and y2 (but clamp to W, H)
         x_crop_size = x2 - x1

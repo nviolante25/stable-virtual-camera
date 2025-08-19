@@ -114,6 +114,7 @@ class MVHumanNetDataset(Dataset):
         step_size=60,
         preload_path=None,
         synthetic_dataset_path=None,
+        crop_padding=0
     ):
         self.root_dir = root_dir             # directory of all subject directories
         self.latents_dir = latents_dir       # directory of all latents
@@ -138,7 +139,7 @@ class MVHumanNetDataset(Dataset):
 
         if self.num_images > 16: # if more than 16, disable trajectory NVS batching
             self.adjacent_frame_sampling_prob = 0.0
-
+        self.crop_padding = crop_padding
         # actual data
         self.cam_params = {} # Dict[subject: (extrinsics, intrinsics, camera_scale)]
         self.scenes = self._load_scenes() if preload_path is None else self._load_preloaded_filepaths()
@@ -160,8 +161,11 @@ class MVHumanNetDataset(Dataset):
                 T.Normalize([0.5], [0.5])          # Normalize to [-1, 1]
             ])
 
-        if self.random_crop:
-            self.cropper = RandomBBoxCropper()
+        if self.random_crop or self.maximal_crop:
+            self.cropper = RandomBBoxCropper(
+                random_crop=self.random_crop,
+                padding=self.crop_padding
+            )
             self.transform = T.Compose([
                 T.Resize(self.target_shape),
                 T.ToTensor(),
@@ -484,7 +488,7 @@ class MVHumanNetDataset(Dataset):
         scale_cameras(c2ws)
 
         # create intrinsics tensor, update intrinsics
-        if self.random_crop:
+        if self.random_crop or self.maximal_crop:
             annots_jsons = [frames_info[cam]["annots"] for cam in camera_order]
             crop_params = []
             for annots_json in annots_jsons:
@@ -519,8 +523,12 @@ class MVHumanNetDataset(Dataset):
 
         # NOTE: the behavior of transform will change depending on whether random crop is used
         # frames = [self.transform(frame) for frame in frames]
-        frames = self.transform(frames)
-        # frames = torch.stack(frames, dim=0) # resize to 576x576 normalized [-1, 1] image tensorss
+        if self.random_crop or self.maximal_crop:
+            frames = [self.transform(frame) for frame in frames]
+            frames = torch.stack(frames, dim=0)
+        else:
+            frames = self.transform(frames)
+            # frames = torch.stack(frames, dim=0) # resize to 576x576 normalized [-1, 1] image tensorss
 
         # load latents if we provided a path
         if self.latents_dir is not None and os.path.exists(os.path.join(self.latents_dir, subject_id, f"{subject_id}.npz")) and not self.maximal_crop:
@@ -623,6 +631,8 @@ class MVHumanNetLoader(pl.LightningDataModule):
         step_size: int = 150,
         preload_path: str = None,
         synthetic_dataset_path: str = None,
+        random_crop: bool = False,
+        maximal_crop: bool = True,
     ):
         super().__init__()
         print("init of DATALOADER")
@@ -637,6 +647,8 @@ class MVHumanNetLoader(pl.LightningDataModule):
         self.step_size = step_size
         self.preload_path = preload_path
         self.synthetic_dataset_path = synthetic_dataset_path
+        self.random_crop = random_crop
+        self.maximal_crop = maximal_crop
         # Define transforms
         # self.transform = T.Compose([
         #     T.Resize(image_size), # whatever final resolution we want here
@@ -658,7 +670,9 @@ class MVHumanNetLoader(pl.LightningDataModule):
                 only_include=self.only_include,
                 step_size=self.step_size,
                 preload_path=self.preload_path,
-                synthetic_dataset_path=self.synthetic_dataset_path
+                synthetic_dataset_path=self.synthetic_dataset_path,
+                random_crop=self.random_crop,
+                maximal_crop=self.maximal_crop
             )
             print("train_dataset loaded")
 
@@ -678,7 +692,9 @@ class MVHumanNetLoader(pl.LightningDataModule):
                 only_include=self.only_include,
                 step_size=self.step_size,
                 preload_path=self.preload_path,
-                synthetic_dataset_path=self.synthetic_dataset_path
+                synthetic_dataset_path=self.synthetic_dataset_path,
+                random_crop=self.random_crop,
+                maximal_crop=self.maximal_crop
             )
             
 
