@@ -521,16 +521,12 @@ class MVHumanNetDataset(Dataset):
             # for ic-light, we would later need to scale these by the scale factor (1024->576)
             
             # later, we resize using transform, so we update cropped intrinsics here accordingly
-            try:
-                scale = np.array([self.target_shape[0] / cropped_img.shape[-2] for cropped_img in frames])
-                Ks = update_intrinsics_resize(Ks, scale)
-                Ks = normalize_intrinsics(Ks, self.target_shape[0], self.target_shape[1]) # normalize intrinsics (H,W)
-                if len(Ks.shape) == 2: # if one shared intrinsic matrix, then repeat it for all
-                    Ks = repeat(Ks, 'd1 d2 -> n d1 d2', n=self.num_images)
-                Ks = torch.from_numpy(Ks).float()
-            except Exception as e:
-                print(f"[{subject_id}, {timestep}] Error {e}")
-
+            scale = np.array([self.target_shape[0] / cropped_img.shape[-2] for cropped_img in frames])
+            Ks = update_intrinsics_resize(Ks, scale)
+            Ks = normalize_intrinsics(Ks, self.target_shape[0], self.target_shape[1]) # normalize intrinsics (H,W)
+            if len(Ks.shape) == 2: # if one shared intrinsic matrix, then repeat it for all
+                Ks = repeat(Ks, 'd1 d2 -> n d1 d2', n=self.num_images)
+            Ks = torch.from_numpy(Ks).float()
         else: # simply CenterCrop
             # if CenterCrop, then crop original size image to square
             min_dim = min(*self.image_shape)
@@ -544,15 +540,12 @@ class MVHumanNetDataset(Dataset):
 
         # NOTE: the behavior of transform will change depending on whether random crop is used
         # frames = [self.transform(frame) for frame in frames]
-        try:
-            if self.random_crop or self.maximal_crop:
-                frames = [self.transform(frame) for frame in frames]
-                frames = torch.stack(frames, dim=0)
-            else:
-                frames = self.transform(frames)
-                # frames = torch.stack(frames, dim=0) # resize to 576x576 normalized [-1, 1] image tensors
-        except Exception as e:
-            print(f"[{subject_id}, {timestep}] Error {e}")
+        if self.random_crop or self.maximal_crop:
+            frames = [self.transform(frame) for frame in frames]
+            frames = torch.stack(frames, dim=0)
+        else:
+            frames = self.transform(frames)
+            # frames = torch.stack(frames, dim=0) # resize to 576x576 normalized [-1, 1] image tensors
 
         # load latents if we provided a path
         if self.latents_dir is not None and os.path.exists(os.path.join(self.latents_dir, subject_id, f"{subject_id}.npz")) and not self.maximal_crop:
