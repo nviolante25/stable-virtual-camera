@@ -476,6 +476,7 @@ class MVHumanNetDataset(Dataset):
         ref_mask = torch.zeros(self.num_images, dtype=torch.bool)
         fix_frame_idx = input_frames_indices[np.random.choice(len(input_frames_indices), 1).item()]
         ref_mask[fix_frame_idx] = True # this becomes the fixed frame
+        input_frames_mask = ref_mask.clone() # for SimVS
         ic_paths = [path.replace("mv_captures", "relit_images").replace(".jpg", ".png") for path in sampled_image_paths]
         # ! NOTE: only works with IC-light; need to combine with InfU later.
 
@@ -652,6 +653,7 @@ class MVHumanNetLoader(pl.LightningDataModule):
         synthetic_dataset_path: str = None,
         random_crop: bool = False,
         maximal_crop: bool = True,
+        val_include: list = None,
     ):
         super().__init__()
         print("init of DATALOADER")
@@ -669,6 +671,7 @@ class MVHumanNetLoader(pl.LightningDataModule):
         self.synthetic_dataset_path = synthetic_dataset_path
         self.random_crop = random_crop
         self.maximal_crop = maximal_crop
+        self.val_include = val_include
         # Define transforms
         # self.transform = T.Compose([
         #     T.Resize(image_size), # whatever final resolution we want here
@@ -704,12 +707,21 @@ class MVHumanNetLoader(pl.LightningDataModule):
             )
             print("train_dataset loaded")
 
-            # self.val_dataset = MVHumanNetDataDictWrapper(
-            #     MVHumanNetDataset(
-            #         root_dir=os.path.join(self.root_dir, "val"),
-            #         transforms=self.transform
-            #     )
-            # )
+        if stage == "val" or stage is None:
+            self.val_dataset = MVHumanNetDataDictWrapper(
+                MVHumanNetDataset(
+                    root_dir=os.path.join(self.root_dir),
+                    transforms=self.transform,
+                    data_limit=self.data_limit,
+                    only_include=self.val_include,
+                    exclude=self.exclude,
+                    step_size=self.step_size,
+                    preload_path=self.preload_path,
+                    synthetic_dataset_path=self.synthetic_dataset_path,
+                    random_crop=self.random_crop,
+                    maximal_crop=self.maximal_crop
+                )
+            )
         if stage == "test" or stage is None:
             self.test_dataset = MVHumanNetDataset(
                 root_dir=os.path.join(self.root_dir, "test"),

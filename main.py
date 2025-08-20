@@ -25,6 +25,8 @@ from pytorch_lightning.utilities import rank_zero_only
 from diffusers import AutoencoderKL
 from seva.sampling import MultiviewCFG
 from sgm.util import exists, instantiate_from_config, isheatmap
+import matplotlib.cm as cm
+from matplotlib.image import imread
 
 import threading
 import queue
@@ -452,6 +454,8 @@ class ImageLogger(Callback):
                     if self.clamp and not isheatmap(images[k]):
                         images[k] = torch.clamp(images[k], -1.0, 1.0)
 
+            # images["diffmap"] = self.diffmap(images["inputs"], images["samples"])
+
             # Perform the actual logging
             self.log_local(
                 task.save_dir, task.split, images, masks,
@@ -505,6 +509,76 @@ class ImageLogger(Callback):
         
         print("[ImageLogger] Logging thread shutdown complete")
     
+    def diffmap(img1, img2, output_path=None):
+        """
+        Creates a difference map image between two RGB images using per-channel differences
+        and the 'jet' colormap. Blue indicates low difference, red indicates high difference.
+        
+        Args:
+            img1: str (path), np.ndarray, or torch.Tensor
+            img2: str (path), np.ndarray, or torch.Tensor
+            output_path: str, optional path to save the output image
+        
+        Returns:
+            np.ndarray: The difference map as a uint8 RGB image array (H, W, 3)
+        """
+        # Load/convert inputs to numpy arrays
+        if isinstance(img1, str):
+            img1 = imread(img1)
+        elif isinstance(img1, torch.Tensor):
+            img1 = img1.cpu().numpy()  # Move to CPU and convert to numpy
+        elif not isinstance(img1, np.ndarray):
+            raise ValueError("img1 must be a path string, numpy array, or torch tensor")
+        
+        if isinstance(img2, str):
+            img2 = imread(img2)
+        elif isinstance(img2, torch.Tensor):
+            img2 = img2.cpu().numpy()
+        elif not isinstance(img2, np.ndarray):
+            raise ValueError("img2 must be a path string, numpy array, or torch tensor")
+        
+        # Ensure same shape and RGB format
+        if img1.shape != img2.shape:
+            raise ValueError("Images must have the same shape")
+        if img1.ndim != 3 or img1.shape[-1] not in [3, 4]:
+            raise ValueError("img1 must be an RGB or RGBA image")
+        if img2.ndim != 3 or img2.shape[-1] not in [3, 4]:
+            raise ValueError("img2 must be an RGB or RGBA image")
+        
+        # Normalize to [0, 1] if necessary
+        if img1.dtype == np.uint8 or img1.max() > 1:
+            img1 = img1.astype(np.float32) / 255.0
+        if img2.dtype == np.uint8 or img2.max() > 1:
+            img2 = img2.astype(np.float32) / 255.0
+        
+        # Use only RGB channels
+        img1 = img1[..., :3]
+        img2 = img2[..., :3]
+        
+        # Compute per-channel absolute differences
+        diff = np.abs(img1 - img2)  # (H, W, 3)
+        
+        # Compute Euclidean distance across channels
+        diff_norm = np.sqrt(np.sum(diff ** 2, axis=-1))  # (H, W)
+        
+        # Normalize to [0, 1]
+        if diff_norm.max() > 0:
+            diff_norm = diff_norm / diff_norm.max()
+        else:
+            diff_norm = diff_norm  # All zeros
+        
+        # Apply 'jet' colormap
+        cmap = cm.get_cmap('jet')
+        rgba = cmap(diff_norm)  # (H, W, 4) float [0,1]
+        rgb = (rgba[..., :3] * 255).astype(np.uint8)  # (H, W, 3) uint8
+        
+        # Save if output_path provided
+        if output_path:
+            from matplotlib.image import imsave
+            imsave(output_path, rgb)
+        
+        return rgb
+
 
     def add_colored_border(self, image_tensor, border_color, border_width=2):
         """
@@ -766,7 +840,8 @@ class ImageLogger(Callback):
                         # if self.clamp and not isheatmap(pre_images[k]):
                         #     pre_images[k] = torch.clamp(pre_images[k], -1.0, 1.0)
 
-                masks = batch["mask"] # (B, max_images) binary boolean tensor
+                # masks = batch["mask"] # (B, max_images) binary boolean tensor
+                masks = batch["ref_mask"] # (B, max_images) binary boolean tensor
                 masks = masks.reshape(-1)[:N].detach().cpu()
 
                 if is_train: # if was training previously, set it back
