@@ -67,10 +67,10 @@ class RandomBBoxCropper(object):
         # deterministic bbox crop:
         old_center_x, old_center_y = center_x, center_y
         bbox_max_dim = torch.maximum(bbox_W, bbox_H) # (B,)
-        x1 = old_center_x - (bbox_max_dim // 2) - self.padding[0]
-        y1 = old_center_y - (bbox_max_dim // 2) - self.padding[1]
-        x2 = old_center_x + (bbox_max_dim // 2) + self.padding[2]
-        y2 = old_center_y + (bbox_max_dim // 2) + self.padding[3]
+        x1 = torch.floor(old_center_x - (bbox_max_dim // 2) - self.padding[0]).int()
+        x2 = torch.floor(old_center_x + (bbox_max_dim // 2) + self.padding[2]).int()
+        y1 = torch.ceil(old_center_y - (bbox_max_dim // 2) - self.padding[1]).int()
+        y2 = torch.ceil(old_center_y + (bbox_max_dim // 2) + self.padding[3]).int()
         rel_bbox = torch.zeros(B, 4)
 
         if self.random_crop:
@@ -105,10 +105,10 @@ class RandomBBoxCropper(object):
             )
 
             # calculate new crop coordinates
-            x1_new = x_offset - (size_sample // 2)
-            y1_new = y_offset - (size_sample // 2)
-            x2_new = x_offset + (size_sample // 2)
-            y2_new = y_offset + (size_sample // 2)
+            x1_new = torch.floor(x_offset - (size_sample // 2)).int()
+            y1_new = torch.floor(y_offset - (size_sample // 2)).int()
+            x2_new = torch.ceil(x_offset + (size_sample // 2)).int()
+            y2_new = torch.ceil(y_offset + (size_sample // 2)).int()
 
             if self.crop_size_bounds is not None:
                 size_sample = torch.clamp(
@@ -134,7 +134,7 @@ class RandomBBoxCropper(object):
             rel_bbox[:, 1] = y1_new - y1 # d_y1
             rel_bbox[:, 2] = x2_new - x2 # d_x2
             rel_bbox[:, 3] = y2_new - y2 # d_y2
-            x1, y1, x2, y2 = x1_new.int(), y1_new.int(), x2_new.int(), y2_new.int()
+            x1, y1, x2, y2 = x1_new, y1_new, x2_new, y2_new
 
         # * update intrinsics
         if len(K.shape) == 2: # repeat original K (3,3) to (B, 3, 3)
@@ -191,7 +191,7 @@ class RandomBBoxCropper(object):
             #     crop_first=False,
             #     padding_mode=True
             # )
-            new_bbox = torch.stack([x1 + pad_left, y1 + pad_top, x2, y2], dim=1)
+            new_bbox = torch.stack([x1 + pad_left, y1 + pad_top, x2 + pad_left, y2 + pad_top], dim=1)
             return image_list, new_bbox
         else:
             return images, torch.stack([x1, y1, x2, y2], dim=1)
@@ -230,9 +230,9 @@ class RandomBBoxCropper(object):
 
         # get new crop coordinates
         x1, y1, x2, y2 = bbox.T
-        
         # if negative coordinates, need to pad the image (K already previously updated)
         images, bbox = self._possibly_pad_img(images, x1, y1, x2, y2)
+        x1, y1, x2, y2 = bbox.T
 
         # perform the actual crop
         cropped_images = []
