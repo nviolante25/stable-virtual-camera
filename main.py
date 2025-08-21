@@ -1355,7 +1355,8 @@ if __name__ == "__main__":
             try:
                 print(model)
                 trainer.fit(model, data, ckpt_path=ckpt_resume_path)
-            except Exception:
+            except Exception as e:
+                print(f"Error: {e}")
                 if not opt.debug:
                     melk()
                 raise
