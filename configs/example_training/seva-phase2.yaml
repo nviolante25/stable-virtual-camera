@@ -1,5 +1,5 @@
 model:
-  base_learning_rate: 1.0e-4
+  base_learning_rate: 1.0e-5
   target: sgm.models.diffusion.DiffusionEngine
   params:
     scale_factor: 0.18215
@@ -137,7 +137,7 @@ data:
     num_workers: 8
     num_images: 8
     step_size: 60
-    only_include: "100001-100200"
+    only_include: "100001-101000"
     preload_path: /workspace/datasetvol/mvhuman_data/mv_captures/preloaded_filepaths.json
     maximal_crop: True
 # data:
@@ -168,7 +168,7 @@ lightning:
       params:
         disabled: False
         enable_autocast: False
-        batch_frequency: 200
+        batch_frequency: 500
         max_images: 8
         increase_log_steps: False
         log_first_step: False
