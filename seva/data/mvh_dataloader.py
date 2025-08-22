@@ -719,7 +719,8 @@ class MVHumanNetLoader(pl.LightningDataModule):
                     preload_path=self.preload_path,
                     synthetic_dataset_path=self.synthetic_dataset_path,
                     random_crop=self.random_crop,
-                    maximal_crop=self.maximal_crop
+                    maximal_crop=self.maximal_crop,
+                    drop_last=True
                 )
             )
         if stage == "test" or stage is None:
@@ -735,10 +736,10 @@ class MVHumanNetLoader(pl.LightningDataModule):
                 preload_path=self.preload_path,
                 synthetic_dataset_path=self.synthetic_dataset_path,
                 random_crop=self.random_crop,
-                maximal_crop=self.maximal_crop
+                maximal_crop=self.maximal_crop,
+                drop_last=True
             )
             
-
     def prepare_data(self):
         pass
 
@@ -749,17 +750,19 @@ class MVHumanNetLoader(pl.LightningDataModule):
             batch_size=self.batch_size,
             shuffle=self.shuffle,
             num_workers=self.num_workers,
+            drop_last=True,
             pin_memory=True
         )
 
-    # def val_dataloader(self) -> DataLoader:
-    #     return DataLoader(
-    #         self.val_dataset,
-    #         batch_size=self.batch_size,
-    #         shuffle=False,
-    #         num_workers=self.num_workers,
-    #         pin_memory=True
-    #     )
+    def val_dataloader(self) -> DataLoader:
+        return DataLoader(
+            self.val_dataset,
+            batch_size=self.batch_size,
+            shuffle=False,
+            num_workers=self.num_workers,
+            drop_last=True,
+            pin_memory=True
+        )
 
     def test_dataloader(self) -> DataLoader:
         return DataLoader(
@@ -767,5 +770,6 @@ class MVHumanNetLoader(pl.LightningDataModule):
             batch_size=self.batch_size,
             shuffle=False,
             num_workers=self.num_workers,
+            drop_last=True,
             pin_memory=True
         )
