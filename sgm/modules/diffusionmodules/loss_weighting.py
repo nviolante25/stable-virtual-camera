@@ -1,5 +1,6 @@
 from abc import ABC, abstractmethod
 
+from numpy import isnan
 import torch
 
 
@@ -76,6 +77,8 @@ class SimVSWeighting(DiffusionLossWeighting):
                 dists = torch.stack([torch.abs(indices[b] - t) for t in true_idx]).min(dim=0).values
                 dists[bools[b]] = 0
                 weights[b] = dists / dists.max() * max_weight
+                if torch.any(weights[b].isnan()): # all inputs
+                    weights[b] = torch.zeros_like(weights[b])
             else:
                 weights[b] = max_weight
 

@@ -691,6 +691,7 @@ class MVHumanNetLoader(pl.LightningDataModule):
         random_crop: bool = False,
         maximal_crop: bool = True,
         val_include: list = None,
+        use_inconsistent: bool = False,
     ):
         super().__init__()
         print("init of DATALOADER")
@@ -709,6 +710,7 @@ class MVHumanNetLoader(pl.LightningDataModule):
         self.random_crop = random_crop
         self.maximal_crop = maximal_crop
         self.val_include = val_include
+        self.use_inconsistent = use_inconsistent
         # Define transforms
         # self.transform = T.Compose([
         #     T.Resize(image_size), # whatever final resolution we want here
@@ -740,7 +742,8 @@ class MVHumanNetLoader(pl.LightningDataModule):
                 preload_path=self.preload_path,
                 synthetic_dataset_path=self.synthetic_dataset_path,
                 random_crop=self.random_crop,
-                maximal_crop=self.maximal_crop
+                maximal_crop=self.maximal_crop,
+                use_inconsistent=self.use_inconsistent
             )
             print("train_dataset loaded")
 
@@ -757,7 +760,8 @@ class MVHumanNetLoader(pl.LightningDataModule):
                     synthetic_dataset_path=self.synthetic_dataset_path,
                     random_crop=self.random_crop,
                     maximal_crop=self.maximal_crop,
-                    drop_last=True
+                    drop_last=True,
+                    use_inconsistent=self.use_inconsistent
                 )
             )
         if stage == "test" or stage is None:
@@ -774,7 +778,8 @@ class MVHumanNetLoader(pl.LightningDataModule):
                 synthetic_dataset_path=self.synthetic_dataset_path,
                 random_crop=self.random_crop,
                 maximal_crop=self.maximal_crop,
-                drop_last=True
+                drop_last=True,
+                use_inconsistent=self.use_inconsistent
             )
             
     def prepare_data(self):

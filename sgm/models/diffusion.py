@@ -218,11 +218,14 @@ class DiffusionEngine(pl.LightningModule):
             batch["clean_latent"] = x * self.scale_factor # need to scale!
 
         # encode ic latents from the paths (scales)
-        if batch["use_inconsistent"]:
+        if torch.any(batch["use_inconsistent"]).item():
             ic, _ = self._encode_inconsistent_images(batch.pop("ic_paths"), batch["ref_mask"], batch["clean_latent"], batch["ic_bbox"])
+            # for target (not input/ref) frames, zero condition latents
+            ic[~batch["mask"]] = 0
         else:
             # no conditioning (to be replaced by clean_latents for inputs)
             ic = torch.zeros_like(batch["clean_latent"], device=self.device)
+            ic[batch["ref_mask"]] = batch["clean_latent"][batch["ref_mask"]]
 
         # ensure for ref image, ic tensors should be replaced by clean latents 
         # add ic as conditioning in concat (along with clean + plucker + masks)
