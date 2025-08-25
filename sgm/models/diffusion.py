@@ -218,7 +218,11 @@ class DiffusionEngine(pl.LightningModule):
             batch["clean_latent"] = x * self.scale_factor # need to scale!
 
         # encode ic latents from the paths (scales)
-        ic, _ = self._encode_inconsistent_images(batch.pop("ic_paths"), batch["ref_mask"], batch["clean_latent"], batch["ic_bbox"])
+        if batch["use_inconsistent"]:
+            ic, _ = self._encode_inconsistent_images(batch.pop("ic_paths"), batch["ref_mask"], batch["clean_latent"], batch["ic_bbox"])
+        else:
+            # no conditioning (to be replaced by clean_latents for inputs)
+            ic = torch.zeros_like(batch["clean_latent"], device=self.device)
 
         # ensure for ref image, ic tensors should be replaced by clean latents 
         # add ic as conditioning in concat (along with clean + plucker + masks)
@@ -228,8 +232,8 @@ class DiffusionEngine(pl.LightningModule):
                 repeat(
                     batch["ref_mask"],
                     "b n -> b n 1 h w",
-                    h=batch["concat"].shape[-2],
-                    w=batch["concat"].shape[-1]
+                    h=batch["plucker"].shape[-2],
+                    w=batch["plucker"].shape[-1]
                 )
             ], dim=2),
             "concat": torch.cat([batch["concat"], ic], dim=2)

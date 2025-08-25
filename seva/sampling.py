@@ -143,7 +143,7 @@ class DiscreteDenoiser(object):
         sigma = append_dims(sigma, input.ndim)
         c_skip, c_out, c_in, c_noise = self.scaling(sigma)
         c_noise = self.sigma_to_idx(c_noise.reshape(sigma_shape))
-        if "replace" in cond:
+        if "replace" in cond: # only replace reference frame latent only
             x, mask = cond.pop("replace").split((input.shape[1], 1), dim=1)
             input = input * (1 - mask) + x * mask
         return (

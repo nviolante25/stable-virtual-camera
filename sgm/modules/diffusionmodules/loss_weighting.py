@@ -57,6 +57,10 @@ class SevaWeighting(DiffusionLossWeighting):
 class SimVSWeighting(DiffusionLossWeighting):
     def __call__(self, sigma: torch.Tensor, mask, ref_mask, max_weight=5.0) -> torch.Tensor:
         # * for phase 2, mask is now ref_mask (originally input_frames_mask)
+        # only ref_mask gets no weight (since it's the only clean latent)
+        # every input needs a weight to learn ic->consistent
+        # every output needs to learn NVS for new samples
+
         # weight non-ref frames by a constant (1.0)
         # additionally weight by a constant for ref frames
         bools = mask.to(torch.bool)
@@ -75,6 +79,6 @@ class SimVSWeighting(DiffusionLossWeighting):
             else:
                 weights[b] = max_weight
 
-        weights = weights + ref_weights
+        weights = torch.clamp(weights + ref_weights, min=0, max=max_weight)
         return weights
 

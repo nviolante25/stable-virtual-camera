@@ -115,7 +115,8 @@ class MVHumanNetDataset(Dataset):
         step_size=60,
         preload_path=None,
         synthetic_dataset_path=None,
-        crop_padding=0
+        crop_padding=60, # used to prevent clipping of the humans
+        use_inconsistent=False
     ):
         self.root_dir = root_dir             # directory of all subject directories
         self.latents_dir = latents_dir       # directory of all latents
@@ -130,10 +131,29 @@ class MVHumanNetDataset(Dataset):
                                              # ! unrelated to initial crop from crop_params.json
                                              # ! (human-centered 576x576 image crop) 
         self.maximal_crop = maximal_crop     # initial crops to the human based on annots
-        # NOTE: if this is set to True, then latents_dir will be ignored
+        # NOTE: if the above is set to True, then latents_dir will be ignored
         # and latents will be computed on the fly!
+        self.use_inconsistent = use_inconsistent
+        # if True, then will concatenate all clean latents with these ic latents
+        # if False, then will leave conditioning "black" for target images
+        # and will repeat the clean latent for the input images
+
+        # TODO - CURRENT PLAN:
+        # a note on ref_mask and how it will be used:
+        # * not using IC (phase 1): very akin to normal SEVA
+        # - input_mask will determine input & output latents
+        # - targets will have no conditioning
+        # - all input images will have duplicated latent images
+        # - ref_mask will simply be input_mask
+
+        # * using IC (phase 2): incorporate IC latents
+        # - input_mask will be the same (inputs + outputs) but heavily skew
+        #   towards full 8 (num_images) input images
+        # - however, ref_mask will only be a one-hot vector in this case
+        # - all inputs get conditioning, targets continue to get the zero tensor
 
         self.adjacent_frame_sampling_prob = 0.2 # Trajectory NVS acceptance rate
+        self.all_inputs_prob = 0.8
         self.white_background = white_background
         self.preload_path = preload_path
         self.synthetic_dataset_path = synthetic_dataset_path # IC-light/InfU output directory
@@ -465,20 +485,36 @@ class MVHumanNetDataset(Dataset):
             frames[i] = T.ToTensor()(masked_image)
 
         # Sample input/target frame split
-        num_input_frames = np.random.randint(1, self.num_images) # at least 1 input frame
+        if not self.use_inconsistent:
+            num_input_frames = np.random.randint(1, self.num_images) # at least 1 input frame
+        else:
+            # NOTE: if use_ic, then we make it higher probability that all num_images are inputs
+            # meaning that input_frames_mask will be all 1, and ref_maks will be one-hot
+            # if input_frames_mask is 0 at any point (not max num_images case), then these will have no ic cond.
+            if np.random.rand() <= self.all_inputs_prob:
+                # more likely to have all inconsistent inputs (then reconstruct to target)
+                num_input_frames = self.num_images
+            else: # 20% chance to have some ic inputs and then new targets
+                num_input_frames = np.random.randint(1, self.num_images) # at least 1 input frame
+        
         input_frames_indices = np.random.choice(self.num_images, num_input_frames, replace=False) 
 
         # Create input/target masks (1: input/ 0: target)
         input_frames_mask = torch.zeros(self.num_images, dtype=torch.bool)
         input_frames_mask[input_frames_indices] = True
 
-        # reference mask for SimVS
-        ref_mask = torch.zeros(self.num_images, dtype=torch.bool)
-        fix_frame_idx = input_frames_indices[np.random.choice(len(input_frames_indices), 1).item()]
-        ref_mask[fix_frame_idx] = True # this becomes the fixed frame
-        input_frames_mask = ref_mask.clone() # for SimVS
+        if not self.use_inconsistent: # phase 1
+            # since inputs are all consistent in dataset, we can use multiple "references"
+            ref_mask = input_frames_mask.clone()
+        else:
+            # inputs will all be inconsistent, and we can only fix to a "single reference"
+            ref_mask = torch.zeros(self.num_images, dtype=torch.bool)
+            fix_frame_idx = input_frames_indices[np.random.choice(len(input_frames_indices), 1).item()]
+            ref_mask[fix_frame_idx] = True # this becomes the fixed frame
+            # input_frames_mask = ref_mask.clone()
+
         ic_paths = [path.replace("mv_captures", "relit_images").replace(".jpg", ".png") for path in sampled_image_paths]
-        # ! NOTE: only works with IC-light; need to combine with InfU later.
+        # ! NOTE: only works with IC-light; need to combine with InfU later (combine in filesystem or sample)
 
         camera_mask = torch.ones(self.num_images, dtype=torch.bool)
 
@@ -593,17 +629,17 @@ class MVHumanNetDataset(Dataset):
             replace = torch.cat(
                 [
                     clean_latents * self.scale_factor,
-                    # repeat( -- old Seva
+                    # repeat(
                     #     input_frames_mask,
                     #     "n -> n 1 h w",
                     #     h=pluckers.shape[2],
                     #     w=pluckers.shape[3],
                     # ),
                     repeat(
-                    ref_mask, 
-                    "n -> n 1 h w", 
-                    h=pluckers.shape[2],
-                    w=pluckers.shape[3] 
+                        ref_mask, 
+                        "n -> n 1 h w", 
+                        h=pluckers.shape[2],
+                        w=pluckers.shape[3] 
                     ),
                 ],
                 dim=1,
@@ -626,7 +662,8 @@ class MVHumanNetDataset(Dataset):
                 "frames": frames,
                 "replace": replace, # contains pre-scaled clean latents!
                 "c2w": c2ws,
-                "K": Ks
+                "K": Ks,
+                "use_inconsistent": self.use_inconsistent
             }
         except Exception as e:
             print(f"Error creating output_dict: {e}")
