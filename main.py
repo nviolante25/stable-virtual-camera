@@ -438,7 +438,7 @@ class ImageLogger(Callback):
             for k in task.images:
                 if isinstance(task.images[k], torch.Tensor):
                     images[k] = task.images[k].to("cpu")
-            masks = task.masks.to("cpu")
+            masks = task.masks
 
             # Decode latents
             for k in images:
@@ -639,6 +639,8 @@ class ImageLogger(Callback):
         pl_module: Union[None, pl.LightningModule] = None,
     ):
         root = os.path.join(save_dir, "images", split)
+        ref_mask   = masks[0]
+        input_mask = masks[1]
         for k in images:
             if isheatmap(images[k]):
                 print("ImageLogger::log_local:in local log_local:heatmap:")
@@ -664,10 +666,13 @@ class ImageLogger(Callback):
                 for i, img in enumerate(images[k]):
                     # Determine border color based on image key or index
                     
-                    if masks[i]: # inputs
+                    if input_mask[i]: # inputs
                         border_color = (247.0, 121.0, 132.0)  # red
                     else: # targets
                         border_color = (101.0, 174.0, 219.0)  # blue
+                    # if ref image, then should be green
+                    if ref_mask[i]:
+                        border_color = (0.0, 255.0, 0.0) # green
 
                     img = self.tensor_to_image(img) # (-1, 1) ->(0, 1)
                     bordered_img = self.add_colored_border(img, border_color, border_width=24)
@@ -759,7 +764,16 @@ class ImageLogger(Callback):
                 else: 
                     x = x * pl_module.scale_factor
                 batch["clean_latent"] = x
-                ic, rgb_ic = pl_module._encode_inconsistent_images(batch.pop("ic_paths"), batch["ref_mask"], x, batch["ic_bbox"])    
+
+                if torch.any(batch["use_inconsistent"]).item():
+                    ic, rgb_ic = pl_module._encode_inconsistent_images(batch.pop("ic_paths"), batch["ref_mask"], batch["clean_latent"], batch["ic_bbox"])
+                    # for target (not input/ref) frames, zero condition latents
+                    ic[~batch["mask"]] = 0
+                else:
+                    # no conditioning (to be replaced by clean_latents for inputs)
+                    ic = torch.zeros_like(batch["clean_latent"], device=pl_module.device)
+                    ic[batch["ref_mask"]] = batch["clean_latent"][batch["ref_mask"]]
+                    rgb_ic = batch["frames"] # same thing as GTs in phase 1
 
                 # update the batch using this
                 batch.update({
@@ -840,9 +854,10 @@ class ImageLogger(Callback):
                         # if self.clamp and not isheatmap(pre_images[k]):
                         #     pre_images[k] = torch.clamp(pre_images[k], -1.0, 1.0)
 
+                masks = []
                 # masks = batch["mask"] # (B, max_images) binary boolean tensor
-                masks = batch["ref_mask"] # (B, max_images) binary boolean tensor
-                masks = masks.reshape(-1)[:N].detach().cpu()
+                masks.append(batch["ref_mask"].reshape(-1)[:N].detach().cpu()) # (B, max_images) binary boolean tensor
+                masks.append(batch["mask"].reshape(-1)[:N].detach().cpu()) # (B, max_images) binary boolean tensor
 
                 if is_train: # if was training previously, set it back
                     # this shouldn't interfere, since the VAE is frozen anyways
