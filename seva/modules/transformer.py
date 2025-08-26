@@ -65,11 +65,6 @@ class Attention(nn.Module):
         k = self.to_k(context)
         v = self.to_v(context)
 
-        # Convert to float16 for attention
-        q = q.to(torch.float16)
-        k = k.to(torch.float16)
-        v = v.to(torch.float16)
-
         q, k, v = map(
             lambda t: rearrange(t, "b l (h d) -> b h l d", h=self.heads),
             (q, k, v),
@@ -78,7 +73,6 @@ class Attention(nn.Module):
             out = F.scaled_dot_product_attention(q, k, v)
         
         # Convert back to original dtype
-        out = out.to(x.dtype)
         out = rearrange(out, "b h l d -> b l (h d)")
         out = self.to_out(out)
         return out

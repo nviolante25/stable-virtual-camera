@@ -941,6 +941,18 @@ class ImageLogger(Callback):
 
     @rank_zero_only
     def on_train_batch_start(self, trainer, pl_module, batch, batch_idx):
+        # print(f"\n=== Training Precision Info ===")
+        # print(f"Trainer precision: {trainer.precision}")
+        # print(f"Model training mode: {pl_module.training}")
+        
+        # # Check a sample parameter
+        # sample_param = next(pl_module.parameters())
+        # print(f"Sample parameter dtype: {sample_param.dtype}")
+        # print(f"Sample parameter device: {sample_param.device}")
+        
+        # # Check if autocast is active
+        # print(f"Autocast enabled: {torch.is_autocast_enabled()}")
+        # print(f"=== End Training Precision Info ===\n")
         if self.log_before_first_step and pl_module.global_step == 0:
             print(f"{self.__class__.__name__}: logging before training")
             # self.log_img(pl_module, batch, batch_idx, split="train")

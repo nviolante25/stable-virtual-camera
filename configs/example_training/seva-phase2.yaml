@@ -184,4 +184,5 @@ lightning:
     benchmark: False
     num_sanity_val_steps: 0
     accumulate_grad_batches: 1
-    max_epochs: 100
+    max_epochs: 100,
+    precision: "16-mixed"
