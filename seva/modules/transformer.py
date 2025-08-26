@@ -66,14 +66,14 @@ class Attention(nn.Module):
         v = self.to_v(context)
 
         q, k, v = map(
-            lambda t: rearrange(t, "b l (h d) -> b h l d", h=self.heads),
+            lambda t: rearrange(t, "b l (h d) -> b h l d", h=self.heads).contiguous(),
             (q, k, v),
         )
         with sdpa_kernel(SDPBackend.FLASH_ATTENTION):
-            out = F.scaled_dot_product_attention(q, k, v)
+            out = F.scaled_dot_product_attention(q, k, v).contiguous()
         
         # Convert back to original dtype
-        out = rearrange(out, "b h l d -> b l (h d)")
+        out = rearrange(out, "b h l d -> b l (h d)").contiguous()
         out = self.to_out(out)
         return out
 
@@ -150,12 +150,12 @@ class TransformerBlockTimeMix(nn.Module):
         self, x: torch.Tensor, context: torch.Tensor, num_frames: int
     ) -> torch.Tensor:
         _, s, _ = x.shape
-        x = rearrange(x, "(b t) s c -> (b s) t c", t=num_frames)
+        x = rearrange(x, "(b t) s c -> (b s) t c", t=num_frames).contiguous()
         x = self.ff_in(self.norm_in(x)) + x
         x = self.attn1(self.norm1(x), context=None) + x
         x = self.attn2(self.norm2(x), context=context) + x
         x = self.ff(self.norm3(x))
-        x = rearrange(x, "(b s) t c -> (b t) s c", s=s)
+        x = rearrange(x, "(b s) t c -> (b t) s c", s=s).contiguous()
         return x
 
 
@@ -232,20 +232,20 @@ class MultiviewTransformer(nn.Module):
             context = context[::num_frames]
 
         x = self.norm(x)
-        x = rearrange(x, "b c h w -> b (h w) c")
+        x = rearrange(x, "b c h w -> b (h w) c").contiguous()
         x = self.proj_in(x)
 
         for block, mix_block in zip(self.transformer_blocks, self.time_mix_blocks):
             if self.name in self.unflatten_names:
-                x = rearrange(x, "(b t) (h w) c -> b (t h w) c", t=num_frames, h=h, w=w)
+                x = rearrange(x, "(b t) (h w) c -> b (t h w) c", t=num_frames, h=h, w=w).contiguous()
             x = block(x, context=context)
             if self.name in self.unflatten_names:
-                x = rearrange(x, "b (t h w) c -> (b t) (h w) c", t=num_frames, h=h, w=w)
+                x = rearrange(x, "b (t h w) c -> (b t) (h w) c", t=num_frames, h=h, w=w).contiguous()
             x_mix = mix_block(x, context=time_context, num_frames=num_frames)
             x = self.time_mixer(x_spatial=x, x_temporal=x_mix)
 
         x = self.proj_out(x)
-        x = rearrange(x, "b (h w) c -> b c h w", h=h, w=w)
+        x = rearrange(x, "b (h w) c -> b c h w", h=h, w=w).contiguous()
         out = x + x_in
         return out
 
