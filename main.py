@@ -509,7 +509,7 @@ class ImageLogger(Callback):
         
         print("[ImageLogger] Logging thread shutdown complete")
     
-    def diffmap(img1, img2, output_path=None):
+    def diffmap(self, img1, img2, output_path=None):
         """
         Creates a difference map image between two RGB images using per-channel differences
         and the 'jet' colormap. Blue indicates low difference, red indicates high difference.
@@ -592,7 +592,7 @@ class ImageLogger(Callback):
         Returns:
             Tensor with colored border
         """
-        C, H, W = image_tensor.shape
+        C, H, W = image_tensor.shape[-3:]
         
         # Normalize border color from [0, 255] to [0, 1] range
         border_color = tuple(c / 255.0 for c in border_color)
@@ -688,11 +688,11 @@ class ImageLogger(Callback):
                 # if self.rescale:
                 #     grid = (grid + 1.0) / 2.0  # -1,1 -> 0,1; c,h,w
                 
-                grid = grid.permute(1, 2, 0).squeeze(-1)
+                grid = grid.permute(1, 2, 0).squeeze(-1).to("cpu")
                 grid = grid.numpy()
                 grid = (grid * 255).astype(np.uint8)
                 if k == "reconstructions" or k == "samples":
-                    components_for_diffmap.append(grid)
+                    components_for_diffmap.append(grid.copy())
 
                 filename = "{}_gs-{:06}_e-{:06}_b-{:06}.png".format(
                     k, global_step, current_epoch, batch_idx
@@ -756,12 +756,13 @@ class ImageLogger(Callback):
             # }
             # with torch.no_grad(), torch.cuda.amp.autocast(**gpu_autocast_kwargs):
             #     # this sholud be where images are logged!
-            #     print("ImageLogger::Logging images")
+            #     # print("ImageLogger::Logging images")
             #     # images = pl_module.log_images(
             #     #     batch, split=split, **self.log_images_kwargs
             #     # )
 
             # NEW -- CPU based logging, based on DiffusionEngine.log_images
+            # ! replaced with old GPU logging
             with torch.no_grad():
                 conditioner_input_keys = [e.input_key for e in pl_module.conditioner.embedders]
                 if self.log_images_kwargs.get("ucg_keys"):
@@ -839,19 +840,17 @@ class ImageLogger(Callback):
                         c, shape=z.shape[1:], uc=uc, batch_size=N, **sampling_kwargs
                     )
 
-                # async decoder + log to wandb stage -- move to CPU
-                z = z.to("cpu")
-                samples = samples.to("cpu")
-                gt_images = batch["frames"][:N].to("cpu") # choose first N from B
-                rgb_ic = rgb_ic[:N].to("cpu")
-                ref_mask = batch["ref_mask"][:N].to("cpu")
+                # log to wandb stage
+                gt_images = batch["frames"][:N] # choose first N from B
+                rgb_ic = rgb_ic[:N]
+                ref_mask = batch["ref_mask"][:N]
                 gt_images[~ref_mask] = rgb_ic[~ref_mask]
 
-                # unlike in original impl., we have yet to decode the latents; hence, pre-image
-                pre_images = {}
+                pre_images = {} # legacy name
                 pre_images["inputs"] = gt_images
                 pre_images["reconstructions"] = z
-                pre_images["samples"] = samples
+                if sample:
+                    pre_images["samples"] = samples
 
                 # flatten for decoder
                 for k in pre_images: # images is dict{inputs, reconstructions, samples} (as in diffusion.py)
@@ -869,6 +868,9 @@ class ImageLogger(Callback):
                             if not isheatmap(pre_images[k]):
                                 pre_images[k] = pre_images[k][:N]
                         
+                        if k == "samples" or k == "reconstructions":
+                            # decode latents
+                            pre_images[k] = pl_module.decode_first_stage(pre_images[k])
                         pre_images[k] = pre_images[k].detach().float().cpu()
                         # move clamping POST-decoder (which has range -1, 1)
                         # if self.clamp and not isheatmap(pre_images[k]):
@@ -883,11 +885,17 @@ class ImageLogger(Callback):
                     # this shouldn't interfere, since the VAE is frozen anyways
                     pl_module.train()
 
-                # add this iteration's images to the CPU-based logger queue
-                self._queue_log_task(
+                # log images
+                self.log_local(
                     pl_module.logger.save_dir, split, pre_images, masks,
                     pl_module.global_step, pl_module.current_epoch, batch_idx, pl_module
                 )
+
+                # # add this iteration's images to the CPU-based logger queue
+                # self._queue_log_task(
+                #     pl_module.logger.save_dir, split, pre_images, masks,
+                #     pl_module.global_step, pl_module.current_epoch, batch_idx, pl_module
+                # )
             
 
             # for k in images: # images is dict{inputs, reconstructions, samples} (as in diffusion.py)
