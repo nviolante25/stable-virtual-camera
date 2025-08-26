@@ -641,6 +641,7 @@ class ImageLogger(Callback):
         root = os.path.join(save_dir, "images", split)
         ref_mask   = masks[0]
         input_mask = masks[1]
+        components_for_diffmap = []
         for k in images:
             if isheatmap(images[k]):
                 print("ImageLogger::log_local:in local log_local:heatmap:")
@@ -690,6 +691,9 @@ class ImageLogger(Callback):
                 grid = grid.permute(1, 2, 0).squeeze(-1)
                 grid = grid.numpy()
                 grid = (grid * 255).astype(np.uint8)
+                if k == "reconstructions" or k == "samples":
+                    components_for_diffmap.append(grid)
+
                 filename = "{}_gs-{:06}_e-{:06}_b-{:06}.png".format(
                     k, global_step, current_epoch, batch_idx
                 )
@@ -709,6 +713,22 @@ class ImageLogger(Callback):
                         ],
                         step=pl_module.global_step,
                     )
+        if len(components_for_diffmap) == 2:
+            diffmap = self.diffmap(components_for_diffmap[0], components_for_diffmap[1])
+            filename = "{}_gs-{:06}_e-{:06}_b-{:06}.png".format(
+                "diffmap", global_step, current_epoch, batch_idx
+            )
+            path = os.path.join(root, filename)
+            print("ImageLogger::Saving diffmap to: ", path)
+            os.makedirs(os.path.split(path)[0], exist_ok=True)
+            diffmap_img = Image.fromarray(diffmap)
+            diffmap_img.save(path)
+            if exists(pl_module):
+                pl_module.logger.log_image(
+                    key=f"{split}/diffmap",
+                    images=[diffmap_img],
+                    step=pl_module.global_step,
+                )
 
     @rank_zero_only
     def log_img(self, pl_module, batch, batch_idx, split="train", sample=True): #pl_module: DiffusionEngine
