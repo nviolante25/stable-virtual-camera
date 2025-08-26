@@ -140,6 +140,7 @@ data:
     only_include: "100001-100050"
     preload_path: /workspace/datasetvol/mvhuman_data/mv_captures/preloaded_filepaths.json
     maximal_crop: True
+    random_crop: True
     use_inconsistent: True
 # data:
 #   target: sgm.data.dataset.DL3DVDataModuleFromConfig
