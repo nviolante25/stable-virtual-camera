@@ -116,7 +116,8 @@ class MVHumanNetDataset(Dataset):
         preload_path=None,
         synthetic_dataset_path=None,
         crop_padding=60, # used to prevent clipping of the humans
-        use_inconsistent=False
+        use_inconsistent=False,
+        random_crop_prob=0.3 # probability of using random crop over maximal
     ):
         self.root_dir = root_dir             # directory of all subject directories
         self.latents_dir = latents_dir       # directory of all latents
@@ -130,6 +131,7 @@ class MVHumanNetDataset(Dataset):
         self.random_crop = random_crop       # NOTE: this is the toggle for probabilistic cropping 
                                              # ! unrelated to initial crop from crop_params.json
                                              # ! (human-centered 576x576 image crop) 
+        self.random_crop_prob = random_crop_prob
         self.maximal_crop = maximal_crop     # initial crops to the human based on annots
         # NOTE: if the above is set to True, then latents_dir will be ignored
         # and latents will be computed on the fly!
@@ -186,6 +188,7 @@ class MVHumanNetDataset(Dataset):
         if self.random_crop or self.maximal_crop:
             self.cropper = RandomBBoxCropper(
                 random_crop=self.random_crop,
+                random_crop_prob=self.random_crop_prob,
                 padding=self.crop_padding
             )
             self.transform = T.Compose([
@@ -692,6 +695,7 @@ class MVHumanNetLoader(pl.LightningDataModule):
         maximal_crop: bool = True,
         val_include: list = None,
         use_inconsistent: bool = False,
+        random_crop_prob: float = 0.3
     ):
         super().__init__()
         print("init of DATALOADER")
@@ -711,6 +715,7 @@ class MVHumanNetLoader(pl.LightningDataModule):
         self.maximal_crop = maximal_crop
         self.val_include = val_include
         self.use_inconsistent = use_inconsistent
+        self.random_crop_prob = random_crop_prob
         # Define transforms
         # self.transform = T.Compose([
         #     T.Resize(image_size), # whatever final resolution we want here
@@ -743,7 +748,8 @@ class MVHumanNetLoader(pl.LightningDataModule):
                 synthetic_dataset_path=self.synthetic_dataset_path,
                 random_crop=self.random_crop,
                 maximal_crop=self.maximal_crop,
-                use_inconsistent=self.use_inconsistent
+                use_inconsistent=self.use_inconsistent,
+                random_crop_prob=self.random_crop_prob
             )
             print("train_dataset loaded")
 
@@ -761,7 +767,8 @@ class MVHumanNetLoader(pl.LightningDataModule):
                     random_crop=self.random_crop,
                     maximal_crop=self.maximal_crop,
                     drop_last=True,
-                    use_inconsistent=self.use_inconsistent
+                    use_inconsistent=self.use_inconsistent,
+                    random_crop_prob=self.random_crop_prob
                 )
             )
         if stage == "test" or stage is None:
@@ -779,7 +786,8 @@ class MVHumanNetLoader(pl.LightningDataModule):
                 random_crop=self.random_crop,
                 maximal_crop=self.maximal_crop,
                 drop_last=True,
-                use_inconsistent=self.use_inconsistent
+                use_inconsistent=self.use_inconsistent,
+                random_crop_prob=self.random_crop_prob
             )
             
     def prepare_data(self):

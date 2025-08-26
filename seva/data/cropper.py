@@ -6,7 +6,7 @@ from seva.data.preprocessing import update_intrinsics, get_bbox_center_and_size
 
 # NOTE: this should be applied to the OUTPUT 576x576 image shape AFTER initial cropping!
 class RandomBBoxCropper(object):
-    def __init__(self, random_crop=True, crop_size_bounds=None, padding=[0,0,0,0]):
+    def __init__(self, random_crop=True, random_crop_prob=1.0, crop_size_bounds=None, padding=[0,0,0,0]):
         """
         Random (Gaussian) crop transform centered around a 2D bounding box.
         NOTE: images are NOT resized to (576, 576) here!
@@ -14,6 +14,10 @@ class RandomBBoxCropper(object):
         """
         self.crop_size_bounds = crop_size_bounds # (min_crop_size, max_crop_size)
         self.random_crop = random_crop # if maximal_crop only, then should be False
+        self.random_crop_prob = random_crop_prob
+        if not self.random_crop:
+            self.random_crop_prob = 0.0
+
         if isinstance(padding, int) or isinstance(padding, float):
             # ! for now, should always be an int for uniform padding!
             self.padding = [padding, padding, padding, padding]
@@ -21,8 +25,8 @@ class RandomBBoxCropper(object):
             self.padding = padding
         else:
             raise ValueError(f"Invalid padding type: {type(padding)}")
-        if random_crop:
-            self.padding = [0,0,0,0]
+        # if random_crop:
+        #     self.padding = [0,0,0,0]
 
     def _get_crop_params(
         self, 
@@ -73,14 +77,14 @@ class RandomBBoxCropper(object):
         y2 = torch.ceil(old_center_y + (bbox_max_dim // 2) + self.padding[3]).int()
         rel_bbox = torch.zeros(B, 4)
 
-        if self.random_crop:
+        if self.random_crop and options.get("to_crop", False):
             # if random, then give relative bbox (to the initial maximal crop)
             # sampling distribution parameters
             center_mean    = options.get("center_mean", centers)
             center_std     = options.get("center_std", torch.stack([(W - bbox_W) / 6, (H - bbox_H) / 6], dim=1))
-            crop_size_mean = options.get("crop_size_mean", (bbox_W + bbox_H) // 2)
-            crop_size_std  = options.get("crop_size_std", (bbox_W + bbox_H) / 6)
-            min_crop_size  = options.get("min_crop_size", bbox_max_dim // 2) # 1/2 of the larger dimension
+            crop_size_mean = options.get("crop_size_mean", (bbox_W + bbox_H) * 3 / 4)
+            crop_size_std  = options.get("crop_size_std", (bbox_W + bbox_H) / 2)
+            min_crop_size  = options.get("min_crop_size", (bbox_max_dim * 3) // 4) # 3/4 of the larger dimension
 
             # transform all to absolute pixel values (for crop_size, based on min(H,W))
             # mean should be WITHIN the bbox
@@ -94,21 +98,21 @@ class RandomBBoxCropper(object):
 
             # sample x and y offsets (that remain in the initial bbox) from center
             x_offset = torch.clamp(
-                torch.randn(B) * center_std[0] + center_mean[0],
-                min=x1 + size_sample // 2,
-                max=x2 - size_sample // 2
+                torch.randn(B,1) * center_std[:,0].view(-1,1) + center_mean[:,0].view(-1,1),
+                min=(x1 + size_sample // 2 + self.padding[0]).view(-1, 1),
+                max=(x2 - size_sample // 2 - self.padding[2]).view(-1, 1)
             )
             y_offset = torch.clamp(
-                torch.randn(B) * center_std[1] + center_mean[1], 
-                min=y1 + size_sample // 2,
-                max=y2 - size_sample // 2
-            )
+                torch.randn(B,1) * center_std[:,1].view(-1,1) + center_mean[:,1].view(-1,1) - 200, 
+                min=(y1 + size_sample // 2 + self.padding[1]).view(-1, 1),
+                max=(y2 - size_sample // 2 - self.padding[3]).view(-1, 1)
+            ) # ! HARDCODED PIXEL OFFSET to bias towards the face in most poses
 
             # calculate new crop coordinates
-            x1_new = torch.floor(x_offset - (size_sample // 2)).int()
-            y1_new = torch.floor(y_offset - (size_sample // 2)).int()
-            x2_new = torch.ceil(x_offset + (size_sample // 2)).int()
-            y2_new = torch.ceil(y_offset + (size_sample // 2)).int()
+            x1_new = torch.floor(x_offset - (size_sample // 2).view(-1, 1)).int().view(-1)
+            y1_new = torch.floor(y_offset - (size_sample // 2).view(-1, 1)).int().view(-1)
+            x2_new = torch.ceil(x_offset + (size_sample // 2).view(-1, 1)).int().view(-1)
+            y2_new = torch.ceil(y_offset + (size_sample // 2).view(-1, 1)).int().view(-1)
 
             if self.crop_size_bounds is not None:
                 size_sample = torch.clamp(
@@ -219,6 +223,7 @@ class RandomBBoxCropper(object):
         options = {
             "H": images.shape[-2],
             "W": images.shape[-1],
+            "to_crop": True if torch.rand(1) < self.random_crop_prob else False
         }
         options.update(kwargs) # bias towards face based on "annots" face box!
 
