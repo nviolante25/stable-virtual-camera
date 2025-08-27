@@ -172,7 +172,7 @@ lightning:
         enable_autocast: False
         batch_frequency: 500
         max_images: 8
-        increase_log_steps: True
+        increase_log_steps: False
         log_first_step: False
         log_images_kwargs:
           use_ema_scope: False
