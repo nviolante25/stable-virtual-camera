@@ -933,13 +933,25 @@ class ImageLogger(Callback):
             return True
         return False
 
-    @rank_zero_only
+    # @rank_zero_only
     def on_train_batch_end(self, trainer, pl_module, outputs, batch, batch_idx):
+        should_log = False
         if not self.disabled and (pl_module.global_step > 0 or self.log_first_step):
-            self.log_img(pl_module, batch, batch_idx, split="train")
-            pass
+            should_log = True
 
-    @rank_zero_only
+            # All ranks enter the barrier before logging so collectives stay in order
+        if torch.distributed.is_available() and torch.distributed.is_initialized():
+            torch.distributed.barrier()
+
+        # Only rank 0 actually does the heavy GPU work
+        if trainer.is_global_zero and should_log:
+            self.log_img(pl_module, batch, batch_idx, split="train")
+
+        # All ranks wait again before continuing to next step
+        if torch.distributed.is_available() and torch.distributed.is_initialized():
+            torch.distributed.barrier()
+        
+    # @rank_zero_only
     def on_train_batch_start(self, trainer, pl_module, batch, batch_idx):
         # print(f"\n=== Training Precision Info ===")
         # print(f"Trainer precision: {trainer.precision}")
