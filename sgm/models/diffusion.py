@@ -179,6 +179,7 @@ class DiffusionEngine(pl.LightningModule):
         latents = []
         rgb_images = []
         num_images = len(paths)
+        normalizer = T.Normalize([0.5], [0.5])
         with torch.no_grad():
             for i, batch in enumerate(list(zip(*paths))): # assumes these are already (576,576)
                 batch_images = []
@@ -188,13 +189,13 @@ class DiffusionEngine(pl.LightningModule):
                     transform = T.Compose([
                         T.Resize((576, 576)),
                         T.ToTensor(),
-                        T.Normalize([0.5], [0.5])  # Scale to [-1, 1]
+                        # T.Normalize([0.5], [0.5])  # Scale to [-1, 1]
                     ])
-                    dx1, dy1, dx2, dy2 = rel_bbox[i, j].int()
+                    dx1, dy1, dx2, dy2 = (rel_bbox[i, j]).int() # ! coordinates based on 576^2
                     img_tensor = transform(img)
                     _, H, W = img_tensor.shape
                     img_tensor = img_tensor[:, 0+dy1:H+dy2, 0+dx1:W+dx2]
-                    batch_images.append(img_tensor)
+                    batch_images.append(normalizer(transform(img_tensor))) # resize back to 576^2
                 batch_tensor = torch.stack(batch_images).to(self.device)
                 rgb_images.append(batch_tensor.to(self.device)) # leave normalized
                 latents.append(self.encode_first_stage(batch_tensor))
@@ -219,7 +220,7 @@ class DiffusionEngine(pl.LightningModule):
 
         # encode ic latents from the paths (scales)
         if torch.any(batch["use_inconsistent"]).item():
-            ic, _ = self._encode_inconsistent_images(batch.pop("ic_paths"), batch["ref_mask"], batch["clean_latent"], batch["ic_bbox"])
+            ic, _ = self._encode_inconsistent_images(batch["ic_paths"], batch["ref_mask"], batch["clean_latent"], batch["ic_bbox"])
             # for target (not input/ref) frames, zero condition latents
             ic[~batch["mask"]] = 0
         else:
