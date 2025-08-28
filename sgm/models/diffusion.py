@@ -18,6 +18,7 @@ from ..modules.ema import LitEma
 from ..util import (default, disabled_train, get_obj_from_str,
                     instantiate_from_config, log_txt_as_img)
 from seva.sampling import MultiviewCFG
+import gc
 
 def compute_psnr(pred, target):
     mse = torch.nn.functional.mse_loss(pred, target)
@@ -287,6 +288,14 @@ class DiffusionEngine(pl.LightningModule):
 
         return loss
 
+    def validation_step(self, batch, batch_idx):
+        # TODO: add this in in place of training image logs (not tested yet)
+        loss, loss_dict = self.shared_step(batch)
+        # log averaged validation loss; keep per-step metrics off
+        val_dict = {f"val_{k}": v for k, v in loss_dict.items()}
+        self.log_dict(val_dict, prog_bar=True, logger=True, on_step=False, on_epoch=True)
+        return loss
+
     def test_step(self, batch, batch_idx):
         # Add this debug print
         print(f"Logger save_dir: {self.logger.save_dir}")
@@ -320,6 +329,14 @@ class DiffusionEngine(pl.LightningModule):
             print(f"Generated image keys: {list(images.keys())}")
         
         return metrics
+
+    def on_train_epoch_end(self, *args, **kwargs):
+        # clear multiple GPU cache 
+        torch.cuda.empty_cache()
+        gc.collect()
+
+        if torch.distributed.is_initialized():
+            torch.distributed.barrier()
 
     def on_train_start(self, *args, **kwargs):
         if self.sampler is None or self.loss_fn is None:

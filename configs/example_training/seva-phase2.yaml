@@ -137,7 +137,7 @@ data:
     num_workers: 8
     num_images: 8
     step_size: 60
-    only_include: "100001-100400"
+    only_include: "100001-100500"
     preload_path: /workspace/datasetvol/mvhuman_data/mv_captures/preloaded_filepaths.json
     maximal_crop: True
     random_crop: True

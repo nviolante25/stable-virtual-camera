@@ -975,8 +975,7 @@ class ImageLogger(Callback):
         self, trainer, pl_module, outputs, batch, batch_idx, *args, **kwargs
     ):
         if not self.disabled and pl_module.global_step > 0:
-            # self.log_img(pl_module, batch, batch_idx, split="val")
-            pass
+            self.log_img(pl_module, batch, batch_idx, split="val")
         if hasattr(pl_module, "calibrate_grad_norm"):
             if (
                 pl_module.calibrate_grad_norm and batch_idx % 25 == 0

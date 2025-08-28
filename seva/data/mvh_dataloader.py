@@ -549,7 +549,9 @@ class MVHumanNetDataset(Dataset):
                 face_bbox = annots_json['bbox_face'][:4]
                 crop_params.append((bbox, face_bbox))
             # account for mvhn downsampling (hence the 0.5)
-            bbox_params = torch.stack([torch.tensor(bbox) * 0.5 for bbox, _ in crop_params])
+            # ! big HACK: after 103000+, the annotations are not scaled by 0.5 anymore!
+            bbox_annot_scale = 0.5 if int(subject_id) < 103000 else 1.0
+            bbox_params = torch.stack([torch.tensor(bbox) * bbox_annot_scale for bbox, _ in crop_params])
             # face_params = torch.stack([torch.tensor(face_bbox) * 0.5 for _, face_bbox in crop_params])
             # apparently, face bbox data isn't really        
             # crop_config = {
