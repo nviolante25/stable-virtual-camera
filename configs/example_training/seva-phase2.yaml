@@ -1,5 +1,5 @@
 model:
-  base_learning_rate: 1.0e-5
+  base_learning_rate: 1.0e-4
   target: sgm.models.diffusion.DiffusionEngine
   params:
     scale_factor: 0.18215
