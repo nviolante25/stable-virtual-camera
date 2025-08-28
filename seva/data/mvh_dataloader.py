@@ -755,9 +755,8 @@ class MVHumanNetLoader(pl.LightningDataModule):
             )
             print("train_dataset loaded")
 
-        if stage == "val" or stage is None:
-            self.val_dataset = MVHumanNetDataDictWrapper(
-                MVHumanNetDataset(
+        if stage == "TrainerFn.VALIDATING" or stage is None:
+            self.val_dataset = MVHumanNetDataset(
                     root_dir=os.path.join(self.root_dir),
                     transforms=self.transform,
                     data_limit=self.data_limit,
@@ -768,11 +767,9 @@ class MVHumanNetLoader(pl.LightningDataModule):
                     synthetic_dataset_path=self.synthetic_dataset_path,
                     random_crop=self.random_crop,
                     maximal_crop=self.maximal_crop,
-                    drop_last=True,
                     use_inconsistent=self.use_inconsistent,
                     random_crop_prob=self.random_crop_prob
                 )
-            )
         if stage == "test" or stage is None:
             self.test_dataset = MVHumanNetDataset(
                 root_dir=os.path.join(self.root_dir, "test"),
@@ -787,7 +784,6 @@ class MVHumanNetLoader(pl.LightningDataModule):
                 synthetic_dataset_path=self.synthetic_dataset_path,
                 random_crop=self.random_crop,
                 maximal_crop=self.maximal_crop,
-                drop_last=True,
                 use_inconsistent=self.use_inconsistent,
                 random_crop_prob=self.random_crop_prob
             )
@@ -806,15 +802,15 @@ class MVHumanNetLoader(pl.LightningDataModule):
             pin_memory=True
         )
 
-    def val_dataloader(self) -> DataLoader:
-        return DataLoader(
-            self.val_dataset,
-            batch_size=self.batch_size,
-            shuffle=False,
-            num_workers=self.num_workers,
-            drop_last=True,
-            pin_memory=True
-        )
+    # def val_dataloader(self) -> DataLoader:
+    #     return DataLoader(
+    #         self.val_dataset,
+    #         batch_size=self.batch_size,
+    #         shuffle=False,
+    #         num_workers=self.num_workers,
+    #         drop_last=True,
+    #         pin_memory=True
+    #     )
 
     def test_dataloader(self) -> DataLoader:
         return DataLoader(
