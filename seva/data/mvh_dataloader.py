@@ -117,7 +117,8 @@ class MVHumanNetDataset(Dataset):
         synthetic_dataset_path=None,
         crop_padding=60, # used to prevent clipping of the humans
         use_inconsistent=False,
-        random_crop_prob=0.3 # probability of using random crop over maximal
+        random_crop_prob=0.3, # probability of using random crop over maximal
+        fixed_sampling_ids=None,
     ):
         self.root_dir = root_dir             # directory of all subject directories
         self.latents_dir = latents_dir       # directory of all latents
@@ -153,7 +154,7 @@ class MVHumanNetDataset(Dataset):
         #   towards full 8 (num_images) input images
         # - however, ref_mask will only be a one-hot vector in this case
         # - all inputs get conditioning, targets continue to get the zero tensor
-
+        self.fixed_sampling_ids = fixed_sampling_ids
         self.adjacent_frame_sampling_prob = 0.2 # Trajectory NVS acceptance rate
         self.all_inputs_prob = 0.8
         self.white_background = white_background
@@ -461,6 +462,9 @@ class MVHumanNetDataset(Dataset):
             # print("set NVS")
             images_permutation = np.random.choice(len(sampled_image_paths), self.num_images, replace=False)
 
+        if self.fixed_sampling_ids is not None: # overwrite images_permutation
+            images_permutation = self.fixed_sampling_ids
+
         camera_order = [camera_order[i] for i in images_permutation] # ordered subset of 'num_images' sampled cameras
         sampled_image_paths = [sampled_image_paths[i] for i in images_permutation]
         sampled_image_mask_paths = [sampled_image_mask_paths[i] for i in images_permutation]
@@ -697,7 +701,8 @@ class MVHumanNetLoader(pl.LightningDataModule):
         maximal_crop: bool = True,
         val_include: list = None,
         use_inconsistent: bool = False,
-        random_crop_prob: float = 0.3
+        random_crop_prob: float = 0.3,
+        fixed_sampling_ids: list = None
     ):
         super().__init__()
         print("init of DATALOADER")
@@ -718,6 +723,7 @@ class MVHumanNetLoader(pl.LightningDataModule):
         self.val_include = val_include
         self.use_inconsistent = use_inconsistent
         self.random_crop_prob = random_crop_prob
+        self.fixed_sampling_ids = fixed_sampling_ids
         # Define transforms
         # self.transform = T.Compose([
         #     T.Resize(image_size), # whatever final resolution we want here
@@ -751,7 +757,8 @@ class MVHumanNetLoader(pl.LightningDataModule):
                 random_crop=self.random_crop,
                 maximal_crop=self.maximal_crop,
                 use_inconsistent=self.use_inconsistent,
-                random_crop_prob=self.random_crop_prob
+                random_crop_prob=self.random_crop_prob,
+                fixed_sampling_ids=self.fixed_sampling_ids,
             )
             print("train_dataset loaded")
 
@@ -768,7 +775,8 @@ class MVHumanNetLoader(pl.LightningDataModule):
                     random_crop=self.random_crop,
                     maximal_crop=self.maximal_crop,
                     use_inconsistent=self.use_inconsistent,
-                    random_crop_prob=self.random_crop_prob
+                    random_crop_prob=self.random_crop_prob,
+                    fixed_sampling_ids=self.fixed_sampling_ids,
                 )
         if stage == "test" or stage is None:
             self.test_dataset = MVHumanNetDataset(
@@ -785,7 +793,8 @@ class MVHumanNetLoader(pl.LightningDataModule):
                 random_crop=self.random_crop,
                 maximal_crop=self.maximal_crop,
                 use_inconsistent=self.use_inconsistent,
-                random_crop_prob=self.random_crop_prob
+                random_crop_prob=self.random_crop_prob,
+                fixed_sampling_ids=self.fixed_sampling_ids,
             )
             
     def prepare_data(self):
