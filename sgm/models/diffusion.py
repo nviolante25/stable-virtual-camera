@@ -173,9 +173,12 @@ class DiffusionEngine(pl.LightningModule):
         ref_mask: torch.Tensor,
         clean_latent: torch.Tensor,
         rel_bbox: torch.Tensor,
+        chunk_size: int = 2
     ) -> torch.Tensor:
 
         # TODO: optimize such that we only encode images that are needed using ref_mask
+        old_chunk_size = self.en_and_decode_n_samples_a_time
+        self.en_and_decode_n_samples_a_time = chunk_size # for logging, 2 images at a time to reduce fragmentation
         # load images from paths and convert to tensors
         latents = []
         rgb_images = []
@@ -197,14 +200,15 @@ class DiffusionEngine(pl.LightningModule):
                     _, H, W = img_tensor.shape
                     img_tensor = img_tensor[:, 0+dy1:H+dy2, 0+dx1:W+dx2]
                     batch_images.append(normalizer(transform(img_tensor))) # resize back to 576^2
-                batch_tensor = torch.stack(batch_images).to(self.device)
-                rgb_images.append(batch_tensor.to(self.device)) # leave normalized
-                latents.append(self.encode_first_stage(batch_tensor))
+                batch_tensor = torch.stack(batch_images)
+                rgb_images.append(batch_tensor) # leave normalized
+                latents.append(self.encode_first_stage(batch_tensor.to(self.device)))
             latents = torch.cat(latents, dim=0)
             latents = latents.reshape(-1, num_images, 4, 72, 72) # ! HARDCODED
             # replace latents with clean latents for ref images
             latents[ref_mask] = clean_latent[ref_mask]
             rgb_images = torch.cat(rgb_images, dim=0).reshape(-1, num_images, 3, 576, 576)
+        self.en_and_decode_n_samples_a_time = old_chunk_size
         return latents, rgb_images
 
     def shared_step(self, batch: Dict) -> Any: 
@@ -332,11 +336,12 @@ class DiffusionEngine(pl.LightningModule):
 
     def on_train_epoch_end(self, *args, **kwargs):
         # clear multiple GPU cache 
-        torch.cuda.empty_cache()
-        gc.collect()
+        # torch.cuda.empty_cache()
+        # gc.collect()
 
-        if torch.distributed.is_initialized():
-            torch.distributed.barrier()
+        # if torch.distributed.is_initialized():
+        #     torch.distributed.barrier()
+        pass
 
     def on_train_start(self, *args, **kwargs):
         if self.sampler is None or self.loss_fn is None:
