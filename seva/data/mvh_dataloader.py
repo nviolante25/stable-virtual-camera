@@ -808,7 +808,8 @@ class MVHumanNetLoader(pl.LightningDataModule):
             shuffle=self.shuffle,
             num_workers=self.num_workers,
             drop_last=True,
-            pin_memory=True
+            pin_memory=True,
+            persistent_workers=True
         )
 
     # def val_dataloader(self) -> DataLoader:
@@ -818,7 +819,8 @@ class MVHumanNetLoader(pl.LightningDataModule):
     #         shuffle=False,
     #         num_workers=self.num_workers,
     #         drop_last=True,
-    #         pin_memory=True
+    #         pin_memory=True,
+    #         persistent_workers=True
     #     )
 
     def test_dataloader(self) -> DataLoader:
@@ -828,5 +830,6 @@ class MVHumanNetLoader(pl.LightningDataModule):
             shuffle=False,
             num_workers=self.num_workers,
             drop_last=True,
-            pin_memory=True
+            pin_memory=True,
+            persistent_workers=True
         )

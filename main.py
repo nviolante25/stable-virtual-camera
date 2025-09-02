@@ -736,7 +736,8 @@ class ImageLogger(Callback):
 
         # check if we should log at this batch index
         if (
-            self.check_frequency(check_idx)
+            getattr(self, "should_log_now", False)
+            # self.check_frequency(check_idx)
             and hasattr(pl_module, "log_images")  # batch_idx % self.batch_freq == 0
             and callable(pl_module.log_images)
             and self.max_images > 0
@@ -841,9 +842,9 @@ class ImageLogger(Callback):
                     )
 
                 # log to wandb stage
-                gt_images = batch["frames"][:N] # choose first N from B
+                gt_images = batch["frames"][:N].to("cpu") # choose first N from B
                 rgb_ic = rgb_ic[:N]
-                ref_mask = batch["ref_mask"][:N]
+                ref_mask = batch["ref_mask"][:N].to("cpu") # put into CPU (when using CPU, otherwise GPU)
                 gt_images[~ref_mask] = rgb_ic[~ref_mask]
 
                 pre_images = {} # legacy name
@@ -868,9 +869,10 @@ class ImageLogger(Callback):
                             if not isheatmap(pre_images[k]):
                                 pre_images[k] = pre_images[k][:N]
                         
-                        if k == "samples" or k == "reconstructions":
-                            # decode latents
-                            pre_images[k] = pl_module.decode_first_stage(pre_images[k])
+                        # if k == "samples" or k == "reconstructions": # uncomment if using GPU-based logging
+                        #     # decode latents
+                        #     pre_images[k] = pl_module.decode_first_stage(pre_images[k])
+
                         pre_images[k] = pre_images[k].detach().float().cpu()
                         # move clamping POST-decoder (which has range -1, 1)
                         # if self.clamp and not isheatmap(pre_images[k]):
@@ -885,17 +887,17 @@ class ImageLogger(Callback):
                     # this shouldn't interfere, since the VAE is frozen anyways
                     pl_module.train()
 
-                # log images
-                self.log_local(
-                    pl_module.logger.save_dir, split, pre_images, masks,
-                    pl_module.global_step, pl_module.current_epoch, batch_idx, pl_module
-                )
-
-                # # add this iteration's images to the CPU-based logger queue
-                # self._queue_log_task(
+                # log images -- uncomment if using GPU-based logging
+                # self.log_local(
                 #     pl_module.logger.save_dir, split, pre_images, masks,
                 #     pl_module.global_step, pl_module.current_epoch, batch_idx, pl_module
                 # )
+
+                # add this iteration's images to the CPU-based logger queue
+                self._queue_log_task(
+                    pl_module.logger.save_dir, split, pre_images, masks,
+                    pl_module.global_step, pl_module.current_epoch, batch_idx, pl_module
+                )
             
 
             # for k in images: # images is dict{inputs, reconstructions, samples} (as in diffusion.py)
@@ -930,25 +932,30 @@ class ImageLogger(Callback):
             except IndexError as e:
                 print(e)
                 pass
+            self.should_log_now = True
             return True
+        self.should_log_now = False
         return False
 
     # @rank_zero_only
     def on_train_batch_end(self, trainer, pl_module, outputs, batch, batch_idx):
-        should_log = False
-        if not self.disabled and (pl_module.global_step > 0 or self.log_first_step):
-            should_log = True
-
-            # All ranks enter the barrier before logging so collectives stay in order
-        if torch.distributed.is_available() and torch.distributed.is_initialized():
+        check_idx = batch_idx if self.log_on_batch_idx else pl_module.global_step
+        should_log = (
+            (not self.disabled)
+            and (pl_module.global_step > 0 or self.log_first_step)
+            and self.check_frequency(check_idx) # this mutates in-place, so it defines a self.should_log_now!
+        )
+        # All ranks enter the barrier before logging so collectives stay in order
+        if torch.distributed.is_available() and torch.distributed.is_initialized() and should_log:
             torch.distributed.barrier()
 
         # Only rank 0 actually does the heavy GPU work
         if trainer.is_global_zero and should_log:
+
             self.log_img(pl_module, batch, batch_idx, split="train")
 
         # All ranks wait again before continuing to next step
-        if torch.distributed.is_available() and torch.distributed.is_initialized():
+        if torch.distributed.is_available() and torch.distributed.is_initialized() and should_log:
             torch.distributed.barrier()
         
     # @rank_zero_only

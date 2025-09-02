@@ -182,8 +182,9 @@ class DiffusionEngine(pl.LightningModule):
         # load images from paths and convert to tensors
         latents = []
         rgb_images = []
-        num_images = len(paths)
+        B, num_images = len(paths[0]), len(paths)
         normalizer = T.Normalize([0.5], [0.5])
+        latents_out = torch.empty(B, num_images, 4, 72, 72, device=self.device)
         with torch.no_grad():
             for i, batch in enumerate(list(zip(*paths))): # assumes these are already (576,576)
                 batch_images = []
@@ -201,15 +202,13 @@ class DiffusionEngine(pl.LightningModule):
                     img_tensor = img_tensor[:, 0+dy1:H+dy2, 0+dx1:W+dx2]
                     batch_images.append(normalizer(transform(img_tensor))) # resize back to 576^2
                 batch_tensor = torch.stack(batch_images)
-                rgb_images.append(batch_tensor) # leave normalized
-                latents.append(self.encode_first_stage(batch_tensor.to(self.device)))
-            latents = torch.cat(latents, dim=0)
-            latents = latents.reshape(-1, num_images, 4, 72, 72) # ! HARDCODED
+                rgb_images.append(batch_tensor) # leave normalized, check if CPU
+                latents_out[i] = self.encode_first_stage(batch_tensor.to(self.device))
             # replace latents with clean latents for ref images
-            latents[ref_mask] = clean_latent[ref_mask]
+            latents_out[ref_mask] = clean_latent[ref_mask]
             rgb_images = torch.cat(rgb_images, dim=0).reshape(-1, num_images, 3, 576, 576)
         self.en_and_decode_n_samples_a_time = old_chunk_size
-        return latents, rgb_images
+        return latents_out, rgb_images # latents_out is in GPU, rgb_images in CPU
 
     def shared_step(self, batch: Dict) -> Any: 
         x = self.get_input(batch)
