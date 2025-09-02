@@ -603,10 +603,6 @@ class MVHumanNetDataset(Dataset):
                 ic_image_ = ic_image[:,0+dy1:self.target_shape[0]+dy2, 0+dx1:self.target_shape[1]+dx2] # crop
                 ic_image_ = self.transform(ic_image_)
                 ic_rgb_tensor[i] = ic_image_
-                # Save image to disk
-                os.makedirs("images", exist_ok=True)
-                save_path = os.path.join("images", f"image_ic_{i}.png")
-                torchvision.utils.save_image(ic_rgb_tensor[i], save_path)
             ic_rgb = ic_rgb_tensor
         else: # center crop + resize only
             frames = self.transform(frames)

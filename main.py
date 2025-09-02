@@ -958,6 +958,12 @@ class ImageLogger(Callback):
         # All ranks wait again before continuing to next step
         if torch.distributed.is_available() and torch.distributed.is_initialized() and should_log:
             torch.distributed.barrier()
+
+    def on_exception(self, trainer, pl_module, exception):
+        self.shutdown()
+
+    def on_fit_end(self, trainer, pl_module):
+        self.shutdown()
         
     # @rank_zero_only
     def on_train_batch_start(self, trainer, pl_module, batch, batch_idx):
