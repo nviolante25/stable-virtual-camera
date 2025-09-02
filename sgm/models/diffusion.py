@@ -169,46 +169,24 @@ class DiffusionEngine(pl.LightningModule):
 
     def _encode_inconsistent_images(
         self,
-        paths: List[str],
+        ic_rgb: torch.Tensor,
         ref_mask: torch.Tensor,
         clean_latent: torch.Tensor,
-        rel_bbox: torch.Tensor,
         chunk_size: int = 2
     ) -> torch.Tensor:
-
         # TODO: optimize such that we only encode images that are needed using ref_mask
         old_chunk_size = self.en_and_decode_n_samples_a_time
         self.en_and_decode_n_samples_a_time = chunk_size # for logging, 2 images at a time to reduce fragmentation
         # load images from paths and convert to tensors
-        latents = []
-        rgb_images = []
-        B, num_images = len(paths[0]), len(paths)
-        normalizer = T.Normalize([0.5], [0.5])
+        B, num_images = ic_rgb.shape[0:2]
         latents_out = torch.empty(B, num_images, 4, 72, 72, device=self.device)
         with torch.no_grad():
-            for i, batch in enumerate(list(zip(*paths))): # assumes these are already (576,576)
-                batch_images = []
-                for j, path in enumerate(batch): # for each image in the batch
-                    img = Image.open(path).convert('RGB')
-                    # Apply same transforms as your dataloader
-                    transform = T.Compose([
-                        T.Resize((576, 576)),
-                        T.ToTensor(),
-                        # T.Normalize([0.5], [0.5])  # Scale to [-1, 1]
-                    ])
-                    dx1, dy1, dx2, dy2 = (rel_bbox[i, j]).int() # ! coordinates based on 576^2
-                    img_tensor = transform(img)
-                    _, H, W = img_tensor.shape
-                    img_tensor = img_tensor[:, 0+dy1:H+dy2, 0+dx1:W+dx2]
-                    batch_images.append(normalizer(transform(img_tensor))) # resize back to 576^2
-                batch_tensor = torch.stack(batch_images)
-                rgb_images.append(batch_tensor) # leave normalized, check if CPU
-                latents_out[i] = self.encode_first_stage(batch_tensor.to(self.device))
+            for i in range(B):
+                latents_out[i] = self.encode_first_stage(ic_rgb[i].to(self.device))
             # replace latents with clean latents for ref images
             latents_out[ref_mask] = clean_latent[ref_mask]
-            rgb_images = torch.cat(rgb_images, dim=0).reshape(-1, num_images, 3, 576, 576)
         self.en_and_decode_n_samples_a_time = old_chunk_size
-        return latents_out, rgb_images # latents_out is in GPU, rgb_images in CPU
+        return latents_out # latents_out is in GPU, rgb_images in CPU
 
     def shared_step(self, batch: Dict) -> Any: 
         x = self.get_input(batch)
@@ -224,7 +202,7 @@ class DiffusionEngine(pl.LightningModule):
 
         # encode ic latents from the paths (scales)
         if torch.any(batch["use_inconsistent"]).item():
-            ic, _ = self._encode_inconsistent_images(batch["ic_paths"], batch["ref_mask"], batch["clean_latent"], batch["ic_bbox"])
+            ic = self._encode_inconsistent_images(batch["ic_rgb"], batch["ref_mask"], batch["clean_latent"])
             # for target (not input/ref) frames, zero condition latents
             ic[~batch["mask"]] = 0
         else:
@@ -347,11 +325,11 @@ class DiffusionEngine(pl.LightningModule):
             raise ValueError("Sampler and loss function need to be set for training.")
         
         # Store initial LoRA parameter values for tracking changes
-        self.initial_lora_params = {}
-        for name, param in self.model.named_parameters():
-            if 'lora' in name:
-                self.initial_lora_params[name] = param.data.clone()
-        print(f"Stored initial values for {len(self.initial_lora_params)} LoRA parameters")
+        # self.initial_lora_params = {}
+        # for name, param in self.model.named_parameters():
+        #     if 'lora' in name:
+        #         self.initial_lora_params[name] = param.data.clone()
+        # print(f"Stored initial values for {len(self.initial_lora_params)} LoRA parameters")
 
     def on_train_batch_end(self, *args, **kwargs):
         if self.use_ema:

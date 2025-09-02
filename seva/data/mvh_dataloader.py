@@ -521,6 +521,10 @@ class MVHumanNetDataset(Dataset):
             # input_frames_mask = ref_mask.clone()
 
         ic_paths = [path.replace("mv_captures", "relit_images").replace(".jpg", ".png") for path in sampled_image_paths]
+        ic_rgb = []
+        for i, ic_path in enumerate(ic_paths):
+            ic_image = Image.open(ic_path).convert("RGB")
+            ic_rgb.append(ic_image) # these can be different image shapes originally
         # ! NOTE: only works with IC-light; need to combine with InfU later (combine in filesystem or sample)
 
         camera_mask = torch.ones(self.num_images, dtype=torch.bool)
@@ -589,8 +593,16 @@ class MVHumanNetDataset(Dataset):
         if self.random_crop or self.maximal_crop:
             frames = [self.transform(frame) for frame in frames]
             frames = torch.stack(frames, dim=0)
-        else:
+            ic_rgb = torch.empty((self.num_images, 3, self.target_shape[0], self.target_shape[1]))
+            for i, (ic_image, bbox) in enumerate(zip(ic_rgb, rel_bbox)):
+                dx1, dy1, dx2, dy2 = bbox.int()
+                ic_image = ic_image[:,0+dy1:self.target_shape[0]+dy2, 0+dx1:self.target_shape[1]+dx2] # crop
+                ic_image = self.transform(ic_image) # then transform based on the crop (if any)
+                ic_rgb[i] = ic_image # resized and normalized above
+        else: # center crop + resize only
             frames = self.transform(frames)
+            ic_rgb = [self.transform(ic_image) for ic_image in ic_rgb] # do the same thing as frames
+            ic_rgb = torch.stack(ic_rgb, dim=0)
             # frames = torch.stack(frames, dim=0) # resize to 576x576 normalized [-1, 1] image tensors
 
         # load latents if we provided a path
@@ -663,8 +675,9 @@ class MVHumanNetDataset(Dataset):
                 "clean_latent": clean_latents, # unscaled clean latents
                 "mask": input_frames_mask,
                 "ref_mask": ref_mask, # "one hot" mask for reference images 
-                "ic_paths": ic_paths, # synthetic data paths
-                "ic_bbox": rel_bbox, # for cropping ic latents
+                # "ic_paths": ic_paths, # synthetic data paths
+                "ic_rgb": ic_rgb,
+                # "ic_bbox": rel_bbox, # for cropping ic latents
                 "plucker": pluckers,
                 "camera_mask": camera_mask,
                 "concat": concat,
@@ -809,7 +822,8 @@ class MVHumanNetLoader(pl.LightningDataModule):
             num_workers=self.num_workers,
             drop_last=True,
             pin_memory=True,
-            persistent_workers=True
+            persistent_workers=True,
+            prefetch_factor=2
         )
 
     # def val_dataloader(self) -> DataLoader:
@@ -831,5 +845,6 @@ class MVHumanNetLoader(pl.LightningDataModule):
             num_workers=self.num_workers,
             drop_last=True,
             pin_memory=True,
-            persistent_workers=True
+            persistent_workers=True,
+            prefetch_factor=2
         )
