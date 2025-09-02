@@ -41,6 +41,7 @@ from seva.data.preprocessing import (
 import time
 from seva.data.cropper import RandomBBoxCropper
 from seva.modules.autoencoder import AutoEncoder
+import torchvision
 
 # NOTE: hardcoded camera order for each camera elevation (counter clockwise)
 # use for trajectory NVS training!
@@ -522,9 +523,10 @@ class MVHumanNetDataset(Dataset):
 
         ic_paths = [path.replace("mv_captures", "relit_images").replace(".jpg", ".png") for path in sampled_image_paths]
         ic_rgb = []
+        tensorize = T.ToTensor()
         for i, ic_path in enumerate(ic_paths):
             ic_image = Image.open(ic_path).convert("RGB")
-            ic_rgb.append(ic_image) # these can be different image shapes originally
+            ic_rgb.append(tensorize(ic_image)) # these can be different image shapes originally
         # ! NOTE: only works with IC-light; need to combine with InfU later (combine in filesystem or sample)
 
         camera_mask = torch.ones(self.num_images, dtype=torch.bool)
@@ -593,12 +595,19 @@ class MVHumanNetDataset(Dataset):
         if self.random_crop or self.maximal_crop:
             frames = [self.transform(frame) for frame in frames]
             frames = torch.stack(frames, dim=0)
-            ic_rgb = torch.empty((self.num_images, 3, self.target_shape[0], self.target_shape[1]))
+            ic_rgb_tensor = torch.zeros((self.num_images, 3, self.target_shape[0], self.target_shape[1]), dtype=torch.float32)
             for i, (ic_image, bbox) in enumerate(zip(ic_rgb, rel_bbox)):
+                # First resize ic_image to target shape
+                ic_image = torch.nn.functional.interpolate(ic_image.unsqueeze(0), size=(self.target_shape[0], self.target_shape[1]), mode='bilinear', align_corners=False).squeeze(0)
                 dx1, dy1, dx2, dy2 = bbox.int()
-                ic_image = ic_image[:,0+dy1:self.target_shape[0]+dy2, 0+dx1:self.target_shape[1]+dx2] # crop
-                ic_image = self.transform(ic_image) # then transform based on the crop (if any)
-                ic_rgb[i] = ic_image # resized and normalized above
+                ic_image_ = ic_image[:,0+dy1:self.target_shape[0]+dy2, 0+dx1:self.target_shape[1]+dx2] # crop
+                ic_image_ = self.transform(ic_image_)
+                ic_rgb_tensor[i] = ic_image_
+                # Save image to disk
+                os.makedirs("images", exist_ok=True)
+                save_path = os.path.join("images", f"image_ic_{i}.png")
+                torchvision.utils.save_image(ic_rgb_tensor[i], save_path)
+            ic_rgb = ic_rgb_tensor
         else: # center crop + resize only
             frames = self.transform(frames)
             ic_rgb = [self.transform(ic_image) for ic_image in ic_rgb] # do the same thing as frames
@@ -676,7 +685,7 @@ class MVHumanNetDataset(Dataset):
                 "mask": input_frames_mask,
                 "ref_mask": ref_mask, # "one hot" mask for reference images 
                 # "ic_paths": ic_paths, # synthetic data paths
-                "ic_rgb": ic_rgb,
+                "ic_rgb": ic_rgb, # ! NOTE: normalized!
                 # "ic_bbox": rel_bbox, # for cropping ic latents
                 "plucker": pluckers,
                 "camera_mask": camera_mask,
