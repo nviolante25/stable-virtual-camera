@@ -938,7 +938,7 @@ class ImageLogger(Callback):
         self.should_log_now = False
         return False
 
-    # @rank_zero_only
+    @rank_zero_only
     def on_train_batch_end(self, trainer, pl_module, outputs, batch, batch_idx):
         check_idx = batch_idx if self.log_on_batch_idx else pl_module.global_step
         should_log = (
@@ -964,7 +964,7 @@ class ImageLogger(Callback):
     def on_fit_end(self, trainer, pl_module):
         self.shutdown()
         
-    # @rank_zero_only
+    @rank_zero_only
     def on_train_batch_start(self, trainer, pl_module, batch, batch_idx):
         # print(f"\n=== Training Precision Info ===")
         # print(f"Trainer precision: {trainer.precision}")
