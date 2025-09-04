@@ -730,7 +730,7 @@ class ImageLogger(Callback):
                     step=pl_module.global_step,
                 )
 
-    # @rank_zero_only
+    @rank_zero_only
     def log_img(self, pl_module, batch, batch_idx, split="train", sample=True): #pl_module: DiffusionEngine
         check_idx = batch_idx if self.log_on_batch_idx else pl_module.global_step
 
@@ -952,7 +952,6 @@ class ImageLogger(Callback):
 
         # Only rank 0 actually does the heavy GPU work
         if trainer.is_global_zero and should_log:
-
             self.log_img(pl_module, batch, batch_idx, split="train")
 
         # All ranks wait again before continuing to next step
