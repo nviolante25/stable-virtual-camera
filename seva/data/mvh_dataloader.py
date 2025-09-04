@@ -521,13 +521,17 @@ class MVHumanNetDataset(Dataset):
             ref_mask[fix_frame_idx] = True # this becomes the fixed frame
             # input_frames_mask = ref_mask.clone()
 
-        ic_paths = [path.replace("mv_captures", "relit_images").replace(".jpg", ".png") for path in sampled_image_paths]
-        ic_rgb = []
-        tensorize = T.ToTensor()
-        for i, ic_path in enumerate(ic_paths):
-            ic_image = Image.open(ic_path).convert("RGB")
-            ic_rgb.append(tensorize(ic_image)) # these can be different image shapes originally
-        # ! NOTE: only works with IC-light; need to combine with InfU later (combine in filesystem or sample)
+        if self.use_inconsistent:
+            ic_paths = [path.replace("mv_captures", "relit_images").replace(".jpg", ".png") for path in sampled_image_paths]
+            ic_rgb = []
+            tensorize = T.ToTensor()
+            for i, ic_path in enumerate(ic_paths):
+                ic_image = Image.open(ic_path).convert("RGB")
+                ic_rgb.append(tensorize(ic_image)) # these can be different image shapes originally
+            # ! NOTE: only works with IC-light; need to combine with InfU later (combine in filesystem or sample)
+        else: # if not, then just 0 tensor
+            ic_rgb = torch.zeros((self.num_images, 3, self.target_shape[0], self.target_shape[1]), dtype=torch.float32)
+
 
         camera_mask = torch.ones(self.num_images, dtype=torch.bool)
 
