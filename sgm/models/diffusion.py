@@ -324,7 +324,7 @@ class DiffusionEngine(pl.LightningModule):
         loss, loss_dict = self.shared_step(batch)
         # log averaged validation loss; keep per-step metrics off
         val_dict = {f"val_{k}": v for k, v in loss_dict.items()}
-        self.log_dict(val_dict, prog_bar=True, logger=True, on_step=False, on_epoch=True)
+        self.log_dict(val_dict, prog_bar=True, logger=True, on_step=False, on_epoch=True, sync_dist=True)
         return loss
 
     def test_step(self, batch, batch_idx):

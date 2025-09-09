@@ -20,7 +20,7 @@ from sgm.data.utils_camera import (
 )
 import numpy as np
 import torch
-from torch.utils.data import Dataset, DataLoader
+from torch.utils.data import Dataset, DataLoader, RandomSampler
 import matplotlib.pyplot as plt
 from scipy.stats import multivariate_normal
 from PIL import Image
@@ -803,7 +803,7 @@ class MVHumanNetLoader(pl.LightningDataModule):
                 data_limit=self.data_limit,
                 only_include=self.val_include,
                 exclude=self.exclude,
-                step_size=self.step_size * 10, # don't want too many samples for validation set
+                step_size=self.step_size, # don't want too many samples for validation set
                 preload_path=self.preload_path,
                 synthetic_dataset_path=self.synthetic_dataset_path,
                 random_crop=self.random_crop,
@@ -850,10 +850,13 @@ class MVHumanNetLoader(pl.LightningDataModule):
     def val_dataloader(self) -> DataLoader:
         if not hasattr(self, 'val_dataset'):
             self.setup("validate")
+        k = 1 # fixed for now, sample randomly once from val set
+        sampler = RandomSampler(self.val_dataset, num_samples=self.batch_size * k, replacement=True)
         return DataLoader(
             self.val_dataset,
             batch_size=self.batch_size,
             shuffle=False,
+            sampler=sampler,
             num_workers=self.num_workers,
             drop_last=True,
             pin_memory=True,
