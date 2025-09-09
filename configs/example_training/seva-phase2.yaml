@@ -133,11 +133,12 @@ data:
     # root_dir: /home/stone/dev/datasets/mvhumannet_samples/mv_captures
     # colmap_dir: /home/stone/dev/datasets/dl3dv_samples/dl3dv-colmap-new/
     # latents_dir: /home/stone/dev/datasets/mvhumannet_samples/mv_latents
-    batch_size: 2
+    batch_size: 1
     num_workers: 8
     num_images: 8
     step_size: 60
     only_include: "100001-100500"
+    val_include: "101001-101002"
     preload_path: /workspace/datasetvol/mvhuman_data/mv_captures/preloaded_filepaths.json
     maximal_crop: True
     random_crop: True
@@ -158,7 +159,9 @@ data:
 lightning:
   modelcheckpoint:
     params:
-      every_n_train_steps: 100
+      every_n_train_steps: 5000
+      save_top_k: -1
+      save_on_train_epoch_end: False
 
   callbacks:
     metrics_over_trainsteps_checkpoint:
@@ -168,9 +171,10 @@ lightning:
     image_logger:
       target: main.ImageLogger
       params:
+        log_train: False
         disabled: False
         enable_autocast: False
-        batch_frequency: 250
+        batch_frequency: 1000
         max_images: 8
         increase_log_steps: False
         log_first_step: False
@@ -180,6 +184,7 @@ lightning:
           n_rows: 2
 
   trainer:
+    val_check_interval: 0.25 # around every 2k iterations
     devices: 0,1,
     benchmark: False
     num_sanity_val_steps: 0

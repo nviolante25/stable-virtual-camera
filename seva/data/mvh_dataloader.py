@@ -183,7 +183,7 @@ class MVHumanNetDataset(Dataset):
             self.transform = T.Compose([
                 T.CenterCrop(self.image_shape[0]), # Center crop to square
                 T.Resize(self.target_shape),       # Resize to target shape
-                T.ToTensor(),                      # Convert to tensor
+                T.Compose([T.ToImage(), T.ToDtype(torch.float32, scale=True)]),                      # Convert to tensor
                 T.Normalize([0.5], [0.5])          # Normalize to [-1, 1]
             ])
 
@@ -195,7 +195,7 @@ class MVHumanNetDataset(Dataset):
             )
             self.transform = T.Compose([
                 T.Resize(self.target_shape),
-                T.ToTensor(),
+                T.Compose([T.ToImage(), T.ToDtype(torch.float32, scale=True)]),
                 T.Normalize([0.5], [0.5])
             ])
 
@@ -493,7 +493,7 @@ class MVHumanNetDataset(Dataset):
             # Apply transforms after masking
             # NOTE: if using non-cropped latents, then transforms is just the default as in @dataset.py
             # masked_image = self.transform(masked_image) # ! moved transform to after random crop
-            frames[i] = T.ToTensor()(masked_image)
+            frames[i] = T.Compose([T.ToImage(), T.ToDtype(torch.float32, scale=True)])(masked_image)
 
         # Sample input/target frame split
         if not self.use_inconsistent:
@@ -527,7 +527,7 @@ class MVHumanNetDataset(Dataset):
         if self.use_inconsistent:
             ic_paths = [path.replace("mv_captures", "relit_images").replace(".jpg", ".png") for path in sampled_image_paths]
             ic_rgb = []
-            tensorize = T.ToTensor()
+            tensorize = T.Compose([T.ToImage(), T.ToDtype(torch.float32, scale=True)])
             for i, ic_path in enumerate(ic_paths):
                 ic_image = Image.open(ic_path).convert("RGB")
                 ic_rgb.append(tensorize(ic_image)) # these can be different image shapes originally
@@ -705,6 +705,16 @@ class MVHumanNetDataset(Dataset):
 
         return output_dict
 
+def expand_only_include(only_include):
+    if isinstance(only_include, str): # in the format ex: "100001-102000,102020-104000"
+        only_include = only_include.split(",")
+        expanded_includes = []
+        for subrange in only_include:
+            start, end = [int(num) for num in subrange.split("-")]
+            expanded_includes.extend([str(i).zfill(6) for i in range(start, end + 1)])
+        return expanded_includes
+    else:
+        return only_include
 
 class MVHumanNetLoader(pl.LightningDataModule):
     def __init__(
@@ -756,12 +766,9 @@ class MVHumanNetLoader(pl.LightningDataModule):
         # ])
         self.transform = None # let corresponding Dataset handle this
         if isinstance(self.only_include, str): # in the format ex: "100001-102000,102020-104000"
-            self.only_include = self.only_include.split(",")
-            expanded_includes = []
-            for subrange in self.only_include:
-                start, end = [int(num) for num in subrange.split("-")]
-                expanded_includes.extend([str(i).zfill(6) for i in range(start, end + 1)])
-            self.only_include = expanded_includes
+            self.only_include = expand_only_include(self.only_include)
+        if isinstance(self.val_include, str): # in the format ex: "100001-102000,102020-104000"
+            self.val_include = expand_only_include(self.val_include)
 
     def setup(self, stage: Optional[str] = None):
         print("setup of DATALOADER")
@@ -785,24 +792,26 @@ class MVHumanNetLoader(pl.LightningDataModule):
                 random_crop_prob=self.random_crop_prob,
                 fixed_sampling_ids=self.fixed_sampling_ids,
             )
-            print("train_dataset loaded")
 
-        if stage == "TrainerFn.VALIDATING" or stage is None:
+        if stage == "validate" or stage is None:
+            print("val_dataset reached")
             self.val_dataset = MVHumanNetDataset(
-                    root_dir=os.path.join(self.root_dir),
-                    transforms=self.transform,
-                    data_limit=self.data_limit,
-                    only_include=self.val_include,
-                    exclude=self.exclude,
-                    step_size=self.step_size,
-                    preload_path=self.preload_path,
-                    synthetic_dataset_path=self.synthetic_dataset_path,
-                    random_crop=self.random_crop,
-                    maximal_crop=self.maximal_crop,
-                    use_inconsistent=self.use_inconsistent,
-                    random_crop_prob=self.random_crop_prob,
-                    fixed_sampling_ids=self.fixed_sampling_ids,
-                )
+                root_dir=os.path.join(self.root_dir),
+                latents_dir=self.latents_dir,
+                num_images=self.num_images,
+                transforms=self.transform,
+                data_limit=self.data_limit,
+                only_include=self.val_include,
+                exclude=self.exclude,
+                step_size=self.step_size * 10, # don't want too many samples for validation set
+                preload_path=self.preload_path,
+                synthetic_dataset_path=self.synthetic_dataset_path,
+                random_crop=self.random_crop,
+                maximal_crop=self.maximal_crop,
+                use_inconsistent=self.use_inconsistent,
+                random_crop_prob=self.random_crop_prob,
+                fixed_sampling_ids=self.fixed_sampling_ids,
+            )
         if stage == "test" or stage is None:
             self.test_dataset = MVHumanNetDataset(
                 root_dir=os.path.join(self.root_dir, "test"),
@@ -838,16 +847,19 @@ class MVHumanNetLoader(pl.LightningDataModule):
             prefetch_factor=2
         )
 
-    # def val_dataloader(self) -> DataLoader:
-    #     return DataLoader(
-    #         self.val_dataset,
-    #         batch_size=self.batch_size,
-    #         shuffle=False,
-    #         num_workers=self.num_workers,
-    #         drop_last=True,
-    #         pin_memory=True,
-    #         persistent_workers=True
-    #     )
+    def val_dataloader(self) -> DataLoader:
+        if not hasattr(self, 'val_dataset'):
+            self.setup("validate")
+        return DataLoader(
+            self.val_dataset,
+            batch_size=self.batch_size,
+            shuffle=False,
+            num_workers=self.num_workers,
+            drop_last=True,
+            pin_memory=True,
+            persistent_workers=True,
+            prefetch_factor=2
+        )
 
     def test_dataloader(self) -> DataLoader:
         return DataLoader(

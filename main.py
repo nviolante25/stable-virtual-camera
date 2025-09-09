@@ -347,6 +347,7 @@ class ImageLogger(Callback):
         log_images_kwargs=None,
         log_before_first_step=False,
         enable_autocast=True,
+        log_train=True,
     ):
         super().__init__()
         self.enable_autocast = enable_autocast
@@ -362,7 +363,7 @@ class ImageLogger(Callback):
         self.log_images_kwargs = log_images_kwargs if log_images_kwargs else {}
         self.log_first_step = log_first_step
         self.log_before_first_step = log_before_first_step
-
+        self.log_train = log_train
         # for logging
         with torch.device("cpu"):
             self.cpu_decoder = AutoencoderKL.from_pretrained(
@@ -940,6 +941,8 @@ class ImageLogger(Callback):
 
     @rank_zero_only
     def on_train_batch_end(self, trainer, pl_module, outputs, batch, batch_idx):
+        if not self.log_train:
+            return # don't trigger any logs
         check_idx = batch_idx if self.log_on_batch_idx else pl_module.global_step
         should_log = (
             (not self.disabled)
@@ -966,20 +969,8 @@ class ImageLogger(Callback):
         
     @rank_zero_only
     def on_train_batch_start(self, trainer, pl_module, batch, batch_idx):
-        # print(f"\n=== Training Precision Info ===")
-        # print(f"Trainer precision: {trainer.precision}")
-        # print(f"Model training mode: {pl_module.training}")
-        
-        # # Check a sample parameter
-        # sample_param = next(pl_module.parameters())
-        # print(f"Sample parameter dtype: {sample_param.dtype}")
-        # print(f"Sample parameter device: {sample_param.device}")
-        
-        # # Check if autocast is active
-        # print(f"Autocast enabled: {torch.is_autocast_enabled()}")
-        # print(f"=== End Training Precision Info ===\n")
         if self.log_before_first_step and pl_module.global_step == 0:
-            print(f"{self.__class__.__name__}: logging before training")
+            # print(f"{self.__class__.__name__}: logging before training")
             # self.log_img(pl_module, batch, batch_idx, split="train")
             pass
 
@@ -987,13 +978,18 @@ class ImageLogger(Callback):
     def on_validation_batch_end(
         self, trainer, pl_module, outputs, batch, batch_idx, *args, **kwargs
     ):
-        if not self.disabled and pl_module.global_step > 0:
-            self.log_img(pl_module, batch, batch_idx, split="val")
-        if hasattr(pl_module, "calibrate_grad_norm"):
-            if (
-                pl_module.calibrate_grad_norm and batch_idx % 25 == 0
-            ) and batch_idx > 0:
-                self.log_gradients(trainer, pl_module, batch_idx=batch_idx)
+        # if not self.disabled and pl_module.global_step > 0:
+        if self.disabled:
+            return
+        print(f"Logging validation at {pl_module.global_step}")
+        self.should_log_now = True
+        self.log_img(pl_module, batch, batch_idx, split="val")
+        self.should_log_now = False
+        # if hasattr(pl_module, "calibrate_grad_norm"):
+        #     if (
+        #         pl_module.calibrate_grad_norm and batch_idx % 25 == 0
+        #     ) and batch_idx > 0:
+        #         self.log_gradients(trainer, pl_module, batch_idx=batch_idx)
 
     @rank_zero_only
     def on_test_batch_end(self, trainer, pl_module, outputs, batch, batch_idx, *args, **kwargs):
