@@ -242,6 +242,8 @@ class DiffusionEngine(pl.LightningModule):
         Takes in a batch (from the dataloader) and returns the latents.
         """
         x, batch = self._prepare_batch(batch)
+        print("after prepare batch")
+        print(x.device)
 
         conditioner_input_keys = [e.input_key for e in self.conditioner.embedders]
         ucg_keys = conditioner_input_keys
@@ -254,6 +256,7 @@ class DiffusionEngine(pl.LightningModule):
                     else [],
                 )
 
+        print(c["plucker"].device)
         uc["plucker"] = c["plucker"] # seva@test doesn't zero out pluckers for uc
 
         # prepare the MV CFG parameters
@@ -277,9 +280,8 @@ class DiffusionEngine(pl.LightningModule):
             c, shape=z.shape[1:], uc=uc, batch_size=N, **sampling_kwargs
         )
 
+        return samples
         
-
-
     def training_step(self, batch, batch_idx):
         # print("\nDiffusionEngine::training_step batch:\n", batch)
         loss, loss_dict = self.shared_step(batch)
