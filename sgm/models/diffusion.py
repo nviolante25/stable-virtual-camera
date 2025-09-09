@@ -98,7 +98,7 @@ class DiffusionEngine(pl.LightningModule):
         path: str,
     ) -> None:
         if path.endswith("ckpt"):
-            sd = torch.load(path, map_location="cpu")["state_dict"]
+            sd = torch.load(path, map_location="cpu", weights_only=False)["state_dict"]
         elif path.endswith("safetensors"):
             sd = load_safetensors(path)
         else:
@@ -167,28 +167,11 @@ class DiffusionEngine(pl.LightningModule):
         loss_dict = {"loss": loss_mean}
         return loss_mean, loss_dict
 
-    def _encode_inconsistent_images(
-        self,
-        ic_rgb: torch.Tensor,
-        ref_mask: torch.Tensor,
-        clean_latent: torch.Tensor,
-        chunk_size: int = 2
-    ) -> torch.Tensor:
-        # TODO: optimize such that we only encode images that are needed using ref_mask
-        old_chunk_size = self.en_and_decode_n_samples_a_time
-        self.en_and_decode_n_samples_a_time = chunk_size # for logging, 2 images at a time to reduce fragmentation
-        # load images from paths and convert to tensors
-        B, num_images = ic_rgb.shape[0:2]
-        latents_out = torch.empty(B, num_images, 4, 72, 72, device=self.device)
-        with torch.no_grad():
-            for i in range(B):
-                latents_out[i] = self.encode_first_stage(ic_rgb[i].to(self.device))
-            # replace latents with clean latents for ref images
-            latents_out[ref_mask] = clean_latent[ref_mask]
-        self.en_and_decode_n_samples_a_time = old_chunk_size
-        return latents_out # latents_out is in GPU, rgb_images in CPU
-
-    def shared_step(self, batch: Dict) -> Any: 
+    def _prepare_batch(self, batch: Dict):
+        """
+        Prepares the batch using IC latents and masks.
+        Outputs the original clean_latents (x) and the prepared batch.
+        """
         x = self.get_input(batch)
         if len(x.shape) == 1: # latents are NOT computed yet
             x = batch["frames"].to(self.device)
@@ -224,10 +207,78 @@ class DiffusionEngine(pl.LightningModule):
             ], dim=2),
             "concat": torch.cat([batch["concat"], ic], dim=2)
         }) # concat to be (B, T, 6(plucker) + 2(masks) + 4(ic))
+        return x, batch
 
-        batch["global_step"] = self.global_step
+    def _encode_inconsistent_images(
+        self,
+        ic_rgb: torch.Tensor,
+        ref_mask: torch.Tensor,
+        clean_latent: torch.Tensor,
+        chunk_size: int = 2
+    ) -> torch.Tensor:
+        # TODO: optimize such that we only encode images that are needed using ref_mask
+        old_chunk_size = self.en_and_decode_n_samples_a_time
+        self.en_and_decode_n_samples_a_time = chunk_size # for logging, 2 images at a time to reduce fragmentation
+        # load images from paths and convert to tensors
+        B, num_images = ic_rgb.shape[0:2]
+        latents_out = torch.empty(B, num_images, 4, 72, 72, device=self.device)
+        with torch.no_grad():
+            for i in range(B):
+                latents_out[i] = self.encode_first_stage(ic_rgb[i].to(self.device))
+            # replace latents with clean latents for ref images
+            latents_out[ref_mask] = clean_latent[ref_mask]
+        self.en_and_decode_n_samples_a_time = old_chunk_size
+        return latents_out # latents_out is in GPU, rgb_images in CPU
+
+    def shared_step(self, batch: Dict) -> Any: 
+        x, batch = self._prepare_batch(batch)
         loss, loss_dict = self(x, batch)
+        batch["global_step"] = self.global_step
         return loss, loss_dict
+
+    def infer(self, batch: Dict):
+        """
+        Runs forward pass of SEVA in eval mode for convenience.
+        Takes in a batch (from the dataloader) and returns the latents.
+        """
+        x, batch = self._prepare_batch(batch)
+
+        conditioner_input_keys = [e.input_key for e in self.conditioner.embedders]
+        ucg_keys = conditioner_input_keys
+
+        # get conditionings
+        c, uc = self.conditioner.get_unconditional_conditioning(
+                    batch,
+                    force_uc_zero_embeddings=ucg_keys
+                    if len(self.conditioner.embedders) > 0
+                    else [],
+                )
+
+        uc["plucker"] = c["plucker"] # seva@test doesn't zero out pluckers for uc
+
+        # prepare the MV CFG parameters
+        # (adapts the CFG depending on the distance away from the input frames)
+        sampling_kwargs = {}
+        if isinstance(self.sampler.guider, MultiviewCFG):
+            sampling_kwargs["c2w"] = batch.get("c2w", None)
+            sampling_kwargs["K"] = batch.get("K", None)
+            sampling_kwargs["input_frame_mask"] = batch.get("mask", None)
+
+        # these are all latents
+        N = x.shape[0]
+        x = x.to(self.device)
+        z = x
+
+        for k in c:
+            if isinstance(c[k], torch.Tensor):
+                c[k], uc[k] = map(lambda y: y[k][:N].to(self.device), (c, uc))
+
+        samples = self.sample(
+            c, shape=z.shape[1:], uc=uc, batch_size=N, **sampling_kwargs
+        )
+
+        
+
 
     def training_step(self, batch, batch_idx):
         # print("\nDiffusionEngine::training_step batch:\n", batch)
@@ -278,9 +329,6 @@ class DiffusionEngine(pl.LightningModule):
         return loss
 
     def test_step(self, batch, batch_idx):
-        # Add this debug print
-        print(f"Logger save_dir: {self.logger.save_dir}")
-        
         # Get ground truth images
         x = self.get_input(batch)
         

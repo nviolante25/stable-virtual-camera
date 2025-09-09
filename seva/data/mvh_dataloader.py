@@ -251,8 +251,11 @@ class MVHumanNetDataset(Dataset):
                 continue  # exclude the given subjects
             if self.data_limit is not None and i >= self.data_limit:
                 break
-            if (subjects_with_latents is not None and subject not in subjects_with_latents) or len(subjects[subject]['cameras']) != 48:
-                print(f"Skipping subject {subject} because it does not have all 48 cameras or latents precomputed!")
+            if len(subjects[subject]['cameras']) != 48:
+                print(f"Skipping subject {subject} because it does not have all 48 cameras!")
+                continue # if no latents precomputed for this subject, or if not all cameras are present, then skip this
+            if (subjects_with_latents is not None and subject not in subjects_with_latents):
+                print(f"Skipping subject {subject} because it does not have latents precomputed!")
                 continue # if no latents precomputed for this subject, or if not all cameras are present, then skip this
 
             extrinsics = subjects[subject]['extrinsics'] # should be pre-cleaned!
