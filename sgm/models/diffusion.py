@@ -236,15 +236,12 @@ class DiffusionEngine(pl.LightningModule):
         batch["global_step"] = self.global_step
         return loss, loss_dict
 
-    def infer(self, batch: Dict):
+    def infer(self, batch: Dict, scale: float = 1.0):
         """
         Runs forward pass of SEVA in eval mode for convenience.
         Takes in a batch (from the dataloader) and returns the latents.
         """
         x, batch = self._prepare_batch(batch)
-        print("after prepare batch")
-        print(x.device)
-
         conditioner_input_keys = [e.input_key for e in self.conditioner.embedders]
         ucg_keys = conditioner_input_keys
 
@@ -256,7 +253,6 @@ class DiffusionEngine(pl.LightningModule):
                     else [],
                 )
 
-        print(c["plucker"].device)
         uc["plucker"] = c["plucker"] # seva@test doesn't zero out pluckers for uc
 
         # prepare the MV CFG parameters
@@ -266,6 +262,7 @@ class DiffusionEngine(pl.LightningModule):
             sampling_kwargs["c2w"] = batch.get("c2w", None)
             sampling_kwargs["K"] = batch.get("K", None)
             sampling_kwargs["input_frame_mask"] = batch.get("mask", None)
+            sampling_kwargs["scale"] = scale
 
         # these are all latents
         N = x.shape[0]
@@ -462,9 +459,11 @@ class DiffusionEngine(pl.LightningModule):
             self.model, input, sigma, c, **kwargs
         )
         if isinstance(self.sampler.guider, MultiviewCFG): # or anything that accepts kwargs
-            samples = self.sampler(denoiser, randn, scale=kwargs.get("scale", 2.0), cond=cond, uc=uc, **kwargs)
+            scale = kwargs.get("scale", 2.0)
+            kwargs.pop("scale", None) # remove scale from kwargs
+            samples = self.sampler(denoiser, randn, scale=scale, cond=cond, uc=uc, **kwargs)
         else:
-            samples = self.sampler(denoiser, randn, scale=kwargs.get("scale", 2.0), cond=cond, uc=uc)
+            samples = self.sampler(denoiser, randn, scale=scale, cond=cond, uc=uc)
         return samples
 
     @torch.no_grad()
