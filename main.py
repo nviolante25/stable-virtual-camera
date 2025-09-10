@@ -939,7 +939,9 @@ class ImageLogger(Callback):
         self.should_log_now = False
         return False
 
-    @rank_zero_only
+    # rank 0 must generate samples and encode latents, causing a long stall that de-syncs from other ranks
+    # therefore, we don't use rank_zero_only and make other ranks wait for rank 0 to finish instead
+    # @rank_zero_only
     def on_train_batch_end(self, trainer, pl_module, outputs, batch, batch_idx):
         if not self.log_train:
             return # don't trigger any logs
@@ -974,7 +976,10 @@ class ImageLogger(Callback):
             # self.log_img(pl_module, batch, batch_idx, split="train")
             pass
 
-    @rank_zero_only
+    # same reason as on_train_batch_end
+    # ! also note: validation set should only sample very few images per num_iterations (maybe 1 or 2)
+    # ! otherwise very long wait times just for logging, slowing down training
+    # @rank_zero_only
     def on_validation_batch_end(
         self, trainer, pl_module, outputs, batch, batch_idx, *args, **kwargs
     ):
@@ -983,7 +988,18 @@ class ImageLogger(Callback):
             return
         print(f"Logging validation at {pl_module.global_step}")
         self.should_log_now = True
-        self.log_img(pl_module, batch, batch_idx, split="val")
+                # All ranks enter the barrier before logging so collectives stay in order
+        if torch.distributed.is_available() and torch.distributed.is_initialized():
+            torch.distributed.barrier()
+
+        # Only rank 0 actually does the heavy GPU work
+        if trainer.is_global_zero and self.should_log_now:
+            self.log_img(pl_module, batch, batch_idx, split="val")
+
+        # All ranks wait again before continuing to next step
+        if torch.distributed.is_available() and torch.distributed.is_initialized():
+            torch.distributed.barrier()
+
         self.should_log_now = False
         # if hasattr(pl_module, "calibrate_grad_norm"):
         #     if (
@@ -991,6 +1007,7 @@ class ImageLogger(Callback):
         #     ) and batch_idx > 0:
         #         self.log_gradients(trainer, pl_module, batch_idx=batch_idx)
 
+    # ! we disable testing for now, but otherwise, for distributed, we'd change this as well.
     @rank_zero_only
     def on_test_batch_end(self, trainer, pl_module, outputs, batch, batch_idx, *args, **kwargs):
         if not self.disabled:
