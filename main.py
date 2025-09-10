@@ -232,9 +232,12 @@ def get_checkpoint_name(logdir):
             print(e)
             version = 1
         # version = last_version + 1
-    else:
+    elif len(ckpt) == 1:
         # in this case, we only have one "last.ckpt"
         ckpt = ckpt[0]
+        version = 1
+    else:
+        ckpt = None
         version = 1
     melk_ckpt_name = f"last-v{version}.ckpt"
     print(f"Current melk ckpt name: {melk_ckpt_name}")
@@ -1098,6 +1101,9 @@ if __name__ == "__main__":
         if not os.path.exists(opt.resume):
             raise ValueError("Cannot find {}".format(opt.resume))
         if os.path.isfile(opt.resume):
+            # point to a ckpt file itself
+            print(f"Resuming from checkpoint file: {opt.resume}")
+
             paths = opt.resume.split("/")
             # idx = len(paths)-paths[::-1].index("logs")+1
             # logdir = "/".join(paths[:idx])
