@@ -766,9 +766,17 @@ class MVHumanNetLoader(pl.LightningDataModule):
         # ])
         self.transform = None # let corresponding Dataset handle this
         if isinstance(self.only_include, str): # in the format ex: "100001-102000,102020-104000"
-            self.only_include = expand_only_include(self.only_include)
+            if os.path.exists(self.only_include): # if passed in a file (subject numbers on each line)
+                with open(self.only_include, 'r') as f:
+                    self.only_include = [line.strip() for line in f]
+            else:
+                self.only_include = expand_only_include(self.only_include)
         if isinstance(self.val_include, str): # in the format ex: "100001-102000,102020-104000"
-            self.val_include = expand_only_include(self.val_include)
+            if os.path.exists(self.val_include): # if passed in a file (subject numbers on each line)
+                with open(self.val_include, 'r') as f:
+                    self.val_include = [line.strip() for line in f]
+            else:
+                self.val_include = expand_only_include(self.val_include)
 
     def setup(self, stage: Optional[str] = None):
         print("setup of DATALOADER")
