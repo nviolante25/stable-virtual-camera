@@ -334,7 +334,8 @@ class LogTask:
     global_step: int
     current_epoch: int
     batch_idx: int
-    pl_module: pl.LightningModule
+    # pl_module: pl.LightningModule
+    logger: WandbLogger
     scale_factor: float
 
 class ImageLogger(Callback):
@@ -465,13 +466,13 @@ class ImageLogger(Callback):
             # Perform the actual logging
             self.log_local(
                 task.save_dir, task.split, images, masks,
-                task.global_step, task.current_epoch, task.batch_idx, task.pl_module
+                task.global_step, task.current_epoch, task.batch_idx, task.logger, task.scale_factor    
             )
             
         except Exception as e:
             self.logger.error(f"[ImageLogger] Error processing log task: {e}")
 
-    def _queue_log_task(self, save_dir, split, images, masks, global_step, current_epoch, batch_idx, pl_module):
+    def _queue_log_task(self, save_dir, split, images, masks, global_step, current_epoch, batch_idx, logger, scale_factor):
         """Queue a logging task for background processing"""
         if self.shutdown_event.is_set():
             self.logger.info("[ImageLogger] Logger is shutting down, skipping log task")
@@ -485,8 +486,9 @@ class ImageLogger(Callback):
             global_step=global_step,
             current_epoch=current_epoch,
             batch_idx=batch_idx,
-            pl_module=pl_module,
-            scale_factor=pl_module.scale_factor
+            # pl_module=pl_module,
+            logger=logger,
+            scale_factor=scale_factor
         )
         
         try:
@@ -642,7 +644,9 @@ class ImageLogger(Callback):
         global_step,
         current_epoch,
         batch_idx,
-        pl_module: Union[None, pl.LightningModule] = None,
+        logger,
+        scale_factor,
+        # pl_module: Union[None, pl.LightningModule] = None,
     ):
         root = os.path.join(save_dir, "images", split)
         ref_mask   = masks[0]
@@ -708,16 +712,16 @@ class ImageLogger(Callback):
                 os.makedirs(os.path.split(path)[0], exist_ok=True)
                 img = Image.fromarray(grid)
                 img.save(path)
-                if exists(pl_module):
+                if exists(logger):
                     assert isinstance(
-                        pl_module.logger, WandbLogger
+                        logger, WandbLogger
                     ), "logger_log_image only supports WandbLogger currently"
-                    pl_module.logger.log_image(
+                    logger.log_image(
                         key=f"{split}/{k}",
                         images=[
                             img,
                         ],
-                        step=pl_module.global_step,
+                        step=global_step,
                     )
         if len(components_for_diffmap) == 2:
             diffmap = self.diffmap(components_for_diffmap[0], components_for_diffmap[1])
@@ -729,11 +733,11 @@ class ImageLogger(Callback):
             os.makedirs(os.path.split(path)[0], exist_ok=True)
             diffmap_img = Image.fromarray(diffmap)
             diffmap_img.save(path)
-            if exists(pl_module):
-                pl_module.logger.log_image(
+            if exists(logger):
+                logger.log_image(
                     key=f"{split}/diffmap",
                     images=[diffmap_img],
-                    step=pl_module.global_step,
+                    step=global_step,
                 )
 
     @rank_zero_only
@@ -903,7 +907,7 @@ class ImageLogger(Callback):
                 # add this iteration's images to the CPU-based logger queue
                 self._queue_log_task(
                     pl_module.logger.save_dir, split, pre_images, masks,
-                    pl_module.global_step, pl_module.current_epoch, batch_idx, pl_module
+                    pl_module.global_step, pl_module.current_epoch, batch_idx, pl_module.logger, pl_module.scale_factor
                 )
             
 
