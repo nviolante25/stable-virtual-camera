@@ -33,6 +33,7 @@ import queue
 from typing import Dict
 from dataclasses import dataclass
 from einops import repeat
+import logging
 
 MULTINODE_HACKS = True
 
@@ -367,6 +368,7 @@ class ImageLogger(Callback):
         self.log_first_step = log_first_step
         self.log_before_first_step = log_before_first_step
         self.log_train = log_train
+        self.logger = logging.getLogger(f"{__name__}.{self.__class__.__name__}")
         # for logging
         with torch.device("cpu"):
             self.cpu_decoder = AutoencoderKL.from_pretrained(
@@ -389,7 +391,7 @@ class ImageLogger(Callback):
 
     def _log_worker(self):
         """Background worker that processes logging tasks from the queue"""
-        print("[ImageLogger] Log worker started")
+        self.logger.info("[ImageLogger] Log worker started")
         
         # Initialize CPU decoder for the worker thread
         # with torch.device("cpu"):
@@ -409,30 +411,30 @@ class ImageLogger(Callback):
                 if task is None:  # Shutdown signal
                     break
                 
-                print(f"[ImageLogger] Processing log task for step {task.global_step}")
+                self.logger.info(f"[ImageLogger] Processing log task for step {task.global_step}")
                 self._process_log_task(task)
                 self.log_queue.task_done()
             except queue.Empty:
                 continue # polling
             except Exception as e:
-                print(f"[ImageLogger] Error in log worker: {e}")
+                self.logger.error(f"[ImageLogger] Error in log worker: {e}")
                 if task is not None:
                     self.log_queue.task_done()
         
         # Process any remaining tasks before exiting
-        print("[ImageLogger] Processing remaining tasks in queue...")
+        self.logger.info("[ImageLogger] Processing remaining tasks in queue...")
         while True:
             try:
                 task = self.log_queue.get_nowait()
                 if task is None:
                     break
-                print(f"[ImageLogger] Processing final log task for step {task.global_step}")
+                self.logger.info(f"[ImageLogger] Processing final log task for step {task.global_step}")
                 self._process_log_task(task)
                 self.log_queue.task_done()
             except queue.Empty:
                 break
         
-        print("[ImageLogger] Log worker stopped")
+        self.logger.info("[ImageLogger] Log worker stopped")
 
     def _process_log_task(self, task: LogTask):
         """Process a single logging task"""
@@ -467,12 +469,12 @@ class ImageLogger(Callback):
             )
             
         except Exception as e:
-            print(f"[ImageLogger] Error processing log task: {e}")
+            self.logger.error(f"[ImageLogger] Error processing log task: {e}")
 
     def _queue_log_task(self, save_dir, split, images, masks, global_step, current_epoch, batch_idx, pl_module):
         """Queue a logging task for background processing"""
         if self.shutdown_event.is_set():
-            print("[ImageLogger] Logger is shutting down, skipping log task")
+            self.logger.info("[ImageLogger] Logger is shutting down, skipping log task")
             return
             
         task = LogTask(
@@ -490,13 +492,13 @@ class ImageLogger(Callback):
         try:
             # Non-blocking put with timeout
             self.log_queue.put(task, timeout=0.1)
-            print(f"[ImageLogger] Queued log task for step {global_step}")
+            self.logger.info(f"[ImageLogger] Queued log task for step {global_step}")
         except queue.Full:
             print(f"[ImageLogger] Queue full, skipping log task for step {global_step}")
 
     def shutdown(self):
         """Gracefully shutdown the logging thread"""
-        print("[ImageLogger] Shutting down logging thread...")
+        self.logger.info("[ImageLogger] Shutting down logging thread...")
         self.shutdown_event.set()
         
         # Send shutdown signal to queue
@@ -509,9 +511,9 @@ class ImageLogger(Callback):
         if self.log_thread and self.log_thread.is_alive():
             self.log_thread.join(timeout=8.0 * 60.0) # it can take 8 minutes to log 4 images
             if self.log_thread.is_alive():
-                print("[ImageLogger] Warning: Log thread did not stop gracefully")
+                self.logger.warning("[ImageLogger] Warning: Log thread did not stop gracefully")
         
-        print("[ImageLogger] Logging thread shutdown complete")
+        self.logger.info("[ImageLogger] Logging thread shutdown complete")
     
     def diffmap(self, img1, img2, output_path=None):
         """
@@ -648,7 +650,7 @@ class ImageLogger(Callback):
         components_for_diffmap = []
         for k in images:
             if isheatmap(images[k]):
-                print("ImageLogger::log_local:in local log_local:heatmap:")
+                self.logger.info("ImageLogger::log_local:in local log_local:heatmap:")
                 fig, ax = plt.subplots()
                 ax = ax.matshow(
                     images[k].cpu().numpy(), cmap="hot", interpolation="lanczos"
@@ -702,7 +704,7 @@ class ImageLogger(Callback):
                     k, global_step, current_epoch, batch_idx
                 )
                 path = os.path.join(root, filename)
-                print("ImageLogger::Saving image to: ", path)
+                self.logger.info("ImageLogger::Saving image to: ", path)
                 os.makedirs(os.path.split(path)[0], exist_ok=True)
                 img = Image.fromarray(grid)
                 img.save(path)
@@ -723,7 +725,7 @@ class ImageLogger(Callback):
                 "diffmap", global_step, current_epoch, batch_idx
             )
             path = os.path.join(root, filename)
-            print("ImageLogger::Saving diffmap to: ", path)
+            self.logger.info("ImageLogger::Saving diffmap to: ", path)
             os.makedirs(os.path.split(path)[0], exist_ok=True)
             diffmap_img = Image.fromarray(diffmap)
             diffmap_img.save(path)
