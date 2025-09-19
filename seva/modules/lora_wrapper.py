@@ -1,7 +1,7 @@
 import torch
 import torch.nn as nn
-from typing import Optional, Dict, Any
-from .lora import LoRALinear, LoRAAttentionWrapper
+from typing import Optional, Dict, Any, cast, List, Union
+from .lora import LoRALinear, LoRAAttentionWrapper, LoRAFeedForwardWrapper
 from ..model import Seva, SevaParams
 from sgm.util import instantiate_from_config
 
@@ -21,46 +21,54 @@ class SevaLoRAWrapper(nn.Module):
         seva_model_config: Dict[str, Any],
         self_attn_rank: int = 4,
         cross_attn_rank: int = 8,
-        alpha: float = 1.0,  # Reduced from 4.0
+        ff_rank: int = 8,
+        alpha: Union[float, List] = 1.0,  # Reduced from 4.0
         dropout: float = 0.0,
         target_modules: Optional[list[str]] = None,
         keys_to_lora: list[str] = ["q", "k", "v"],
         excluded_modules: list[str] = [],
     ):
         super().__init__()
-        self.seva_model = instantiate_from_config(seva_model_config)
+        self.seva_model: nn.Module = cast(nn.Module, instantiate_from_config(seva_model_config))
         self.self_attn_rank = self_attn_rank
         self.cross_attn_rank = cross_attn_rank
-        self.alpha = alpha
+        self.ff_rank = ff_rank
+        # Support per-component alpha: [self_attn_alpha, cross_attn_alpha, ff_alpha]
+        if isinstance(alpha, (list, tuple)):
+            assert len(alpha) == 3, "alpha must be a float or a list/tuple of length 3"
+            self.alpha = [float(alpha[0]), float(alpha[1]), float(alpha[2])]
+        else:
+            self.alpha = [float(alpha)] * 3
         self.dropout = dropout
         self.excluded_modules = excluded_modules
         self.keys_to_lora = keys_to_lora
-        
         # excluded_modules expects an list/set of module path strings
         # an example: output_blocks.9.TimestepEmbedSequential.1.MultiviewTransformer.time_mix_blocks.ModuleList.0.TransformerBlockTimeMix.attn1
         # (excludes the LoRA-transformed MultiviewTransformer's attn1 block in the 9th element of output_blocks)
         # can exclude an entire block by passing in the block's name (e.g. "output_blocks.9", "input_blocks", etc.)
 
-        self.seva_model.freeze(["input", "middle", "output"]) # ensure frozen layers
+        if isinstance(self.seva_model, Seva):
+            self.seva_model.freeze(["input", "middle", "output"]) # ensure frozen layers
 
         if target_modules is None:
-            # only attention-based layers by default (can extend to 'ff' if needed)
-            target_modules = {"TransformerBlockTimeMix", "MultiviewTransformer", "TransformerBlock"}
+            # only attention-based layers by default plus feed-forward wrappers
+            target_modules = ["TransformerBlockTimeMix", "MultiviewTransformer", "TransformerBlock"]
 
-        # Wrap attention layers with LoRA
+        # Wrap attention and MLP layers with LoRA
         self._wrap_attention_with_lora(
             self.seva_model, 
             target_modules, 
             dropout, 
             self_attn_rank, 
             cross_attn_rank, 
-            alpha, 
+            ff_rank,
+            self.alpha, 
             keys_to_lora,
             excluded_modules
         )
 
-    def _wrap_attention_with_lora(self, module, target_modules, dropout, self_attn_rank, cross_attn_rank, alpha, keys_to_lora, excluded_modules, current_path=""):
-        """Recursively wrap attention modules with LoRA instead of replacing them."""
+    def _wrap_attention_with_lora(self, module, target_modules, dropout, self_attn_rank, cross_attn_rank, ff_rank, alphas, keys_to_lora, excluded_modules, current_path=""):
+        """Recursively wrap attention and feed-forward (MLP) modules with LoRA."""
         for name, child in module.named_children():
             module_path = f"{current_path}.{name}.{child.__class__.__name__}" if current_path else name
 
@@ -68,11 +76,12 @@ class SevaLoRAWrapper(nn.Module):
                 continue
 
             if child.__class__.__name__ in target_modules and module_path not in excluded_modules:
+                alpha_self, alpha_cross, alpha_ff = alphas
                 if hasattr(child, "attn1"):  # self-attention
                     child.attn1 = LoRAAttentionWrapper(
                         original_attn=child.attn1,
                         rank=self_attn_rank,
-                        alpha=alpha,
+                        alpha=alpha_self,
                         dropout=dropout,
                         keys_to_lora=keys_to_lora,
                     )
@@ -80,13 +89,24 @@ class SevaLoRAWrapper(nn.Module):
                     child.attn2 = LoRAAttentionWrapper(
                         original_attn=child.attn2,
                         rank=cross_attn_rank,
-                        alpha=alpha,
+                        alpha=alpha_cross,
                         dropout=dropout,
                         keys_to_lora=keys_to_lora,
                     )
+                # Wrap MLPs in transformer blocks
+                if hasattr(child, "ff") and isinstance(getattr(child, "ff"), nn.Module):
+                    try:
+                        child.ff = LoRAFeedForwardWrapper(original_ff=child.ff, rank=ff_rank, alpha=alpha_ff, dropout=dropout)
+                    except Exception:
+                        pass
+                if hasattr(child, "ff_in") and isinstance(getattr(child, "ff_in"), nn.Module):
+                    try:
+                        child.ff_in = LoRAFeedForwardWrapper(original_ff=child.ff_in, rank=ff_rank, alpha=alpha_ff, dropout=dropout)
+                    except Exception:
+                        pass
                     
             # Recursively process child modules
-            self._wrap_attention_with_lora(child, target_modules, dropout, self_attn_rank, cross_attn_rank, alpha, keys_to_lora, excluded_modules, module_path)
+            self._wrap_attention_with_lora(child, target_modules, dropout, self_attn_rank, cross_attn_rank, ff_rank, alphas, keys_to_lora, excluded_modules, module_path)
 
     def forward(self, x: torch.Tensor, t: torch.Tensor, y: torch.Tensor, dense_y: torch.Tensor, num_frames: Optional[int] = None) -> torch.Tensor:
         return self.seva_model(x, t, y, dense_y, num_frames)
@@ -95,7 +115,7 @@ class SevaLoRAWrapper(nn.Module):
         """Save only the LoRA weights."""
         lora_state_dict = {}
         for name, module in self.named_modules():
-            if isinstance(module, LoRAAttentionWrapper):
+            if isinstance(module, (LoRAAttentionWrapper, LoRAFeedForwardWrapper)):
                 for param_name, param in module.named_parameters():
                     if "lora_" in param_name:
                         lora_state_dict[f"{name}.{param_name}"] = param

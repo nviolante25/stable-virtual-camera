@@ -1,7 +1,7 @@
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
-from typing import Optional
+from typing import Optional, Union, List, cast
 import math
 from einops import rearrange, repeat
 from torch.nn.attention import SDPBackend, sdpa_kernel
@@ -126,6 +126,60 @@ class LoRAAttentionWrapper(nn.Module):
             
         return out
 
+
+class LoRAFeedForwardWrapper(nn.Module):
+    """Wraps existing FeedForward MLP with LoRA on both linear projections.
+
+    Expects the target module to follow the structure in seva.modules.transformer.FeedForward:
+      net = [GEGLU(proj: Linear(dim -> 2*inner)), Dropout, Linear(inner -> dim_out)]
+    """
+    def __init__(
+        self,
+        original_ff: nn.Module,
+        rank: int = 4,
+        alpha: float = 4.0,
+        dropout: float = 0.0,
+    ):
+        super().__init__()
+        self.original_ff = original_ff
+        self.rank = rank
+        self.alpha = alpha
+        self.scaling = alpha / rank
+
+        # Freeze original FF params
+        for p in self.original_ff.parameters():
+            p.requires_grad = False
+
+        # Infer shapes from inner Linear layers
+        # original_ff expected to have attribute 'net' = Sequential[GEGLU(proj:Linear), Dropout, Linear]
+        seq = cast(nn.Sequential, getattr(self.original_ff, "net"))
+        geglu = cast(nn.Module, seq[0])
+        proj1 = cast(nn.Linear, getattr(geglu, "proj"))  # dim -> 2*inner
+        proj2 = cast(nn.Linear, seq[2])                   # inner -> dim_out
+        in_features = proj1.in_features
+        out_features_2x = proj1.out_features             # 2*inner
+        inner_features = proj2.in_features               # inner
+        out_features = proj2.out_features                # dim_out
+
+        # LoRA adapters for both projections
+        self.lora_proj1 = LoRALinear(in_features, out_features_2x, rank=rank, alpha=alpha, dropout=dropout)
+        self.lora_proj2 = LoRALinear(inner_features, out_features, rank=rank, alpha=alpha, dropout=dropout)
+
+        # Reuse original dropout
+        self.dropout = cast(nn.Module, seq[1])
+
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
+        # First projection with GEGLU and LoRA residual
+        seq = cast(nn.Sequential, getattr(self.original_ff, "net"))
+        geglu_linear = cast(nn.Linear, getattr(seq[0], "proj"))
+        pre = geglu_linear(x) + self.lora_proj1(x) * 1.0  # scaling already inside LoRALinear
+        x_part, gate = pre.chunk(2, dim=-1)
+        x_act = x_part * F.gelu(gate)
+        x_act = self.dropout(x_act)
+        # Second projection with LoRA residual
+        proj2 = cast(nn.Linear, seq[2])
+        out = proj2(x_act) + self.lora_proj2(x_act)
+        return out
 
 # class LoRAAttention(nn.Module):
 #     def __init__(
