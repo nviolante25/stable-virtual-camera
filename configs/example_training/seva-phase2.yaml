@@ -55,6 +55,7 @@ model:
               ckpt_path: null
         self_attn_rank: 128
         cross_attn_rank: 256
+        ff_rank: 128
         alpha: 16.0
         dropout: 0.0
         target_modules: ["TransformerBlockTimeMix", "MultiviewTransformer", "TransformerBlock"]
@@ -176,7 +177,7 @@ lightning:
         enable_autocast: False
         batch_frequency: 1000
         max_images: 8
-        increase_log_steps: False
+        increase_log_steps: True
         log_first_step: False
         log_images_kwargs:
           use_ema_scope: False
