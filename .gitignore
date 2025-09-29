@@ -46,3 +46,6 @@ htmlcov/
 
 # Pre-commit hooks
 .pre-commit-config.yaml~
+
+.data/
+logs/

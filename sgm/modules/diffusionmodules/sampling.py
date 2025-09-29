@@ -14,6 +14,8 @@ from ...modules.diffusionmodules.sampling_utils import (get_ancestral_step,
                                                         to_d, to_neg_log_sigma,
                                                         to_sigma)
 from ...util import append_dims, default, instantiate_from_config
+from seva.sampling import MultiviewCFG
+from sgm.modules.diffusionmodules.guiders import IdentityGuider
 
 DEFAULT_GUIDER = {"target": "sgm.modules.diffusionmodules.guiders.IdentityGuider"}
 
@@ -209,6 +211,77 @@ class LinearMultistepSampler(BaseDiffusionSampler):
 
 
 class EulerEDMSampler(EDMSampler):
+    def sampler_step(
+        self,
+        sigma: torch.Tensor,
+        next_sigma: torch.Tensor,
+        denoiser,
+        x: torch.Tensor,
+        scale: float | torch.Tensor,
+        cond: dict,
+        uc: dict,
+        gamma: float = 0.0,
+        **guider_kwargs,
+    ) -> torch.Tensor:
+        sigma_hat = sigma * (gamma + 1.0) + 1e-6 # 1e-6 term not in EDMSampler
+        # gamma will be 0 anways, so omitted portion doesn't affect anything
+
+        eps = torch.randn_like(x) * self.s_noise
+        x = x + eps * append_dims(sigma_hat**2 - sigma**2, x.ndim) ** 0.5
+
+        # this is just BaseDiffusionSampler denoise func
+        denoised = denoiser(*self.guider.prepare_inputs(x, sigma_hat, cond, uc))
+        if "scale" not in guider_kwargs:
+            guider_kwargs["scale"] = scale
+
+        if isinstance(self.guider, MultiviewCFG):
+            denoised = self.guider(denoised, sigma_hat, **guider_kwargs)
+        elif isinstance(self.guider, IdentityGuider):
+            denoised = self.guider(denoised, sigma_hat)
+        else:
+            raise ValueError(f"Unknown guider: {self.guider}")
+
+        d = to_d(x, sigma_hat, denoised)
+        dt = append_dims(next_sigma - sigma_hat, x.ndim)
+        return x + dt * d
+
+    def __call__( # from Seva
+        self,
+        denoiser,
+        x: torch.Tensor,
+        scale: float | torch.Tensor,
+        cond: dict,
+        uc: dict | None = None,
+        num_steps: int | None = None,
+        verbose: bool = True,
+        **guider_kwargs,
+    ) -> torch.Tensor:
+        uc = cond if uc is None else uc
+        x, s_in, sigmas, num_sigmas, cond, uc = self.prepare_sampling_loop(
+            x,
+            cond,
+            uc,
+            num_steps,
+        )
+        for i in self.get_sigma_gen(num_sigmas):
+            gamma = (
+                min(self.s_churn / (num_sigmas - 1), 2**0.5 - 1)
+                if self.s_tmin <= sigmas[i] <= self.s_tmax
+                else 0.0
+            )
+            x = self.sampler_step(
+                s_in * sigmas[i],
+                s_in * sigmas[i + 1],
+                denoiser,
+                x,
+                scale,
+                cond,
+                uc,
+                gamma,
+                **guider_kwargs, # only difference
+            )
+        return x
+
     def possible_correction_step(
         self, euler_step, x, d, dt, next_sigma, denoiser, cond, uc
     ):

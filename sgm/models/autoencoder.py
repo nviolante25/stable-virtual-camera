@@ -12,7 +12,7 @@ from einops import rearrange
 from packaging import version
 from safetensors.torch import load_file
 
-from ..modules.autoencoding.regularizers import AbstractRegularizer
+from ..modules.autoencoding.regularizers.base import AbstractRegularizer
 from ..modules.ema import LitEma
 from ..util import (default, get_nested_attribute, get_obj_from_str,
                     instantiate_from_config)
@@ -622,6 +622,36 @@ class IdentityFirstStage(AbstractAutoencoder):
 
     def decode(self, x: Any, *args, **kwargs) -> Any:
         return self.decoder(x)
+
+
+# used during training when using clean latents
+# decoder from VAE decoder
+class DecoderOnlyAutoencoderKL(AbstractAutoencoder):
+    def __init__(self, module, **kwargs):
+        super().__init__(**kwargs)
+        self.encoder = lambda x: x  # IdentityFirstStage basically
+        self.module = instantiate_from_config(module) # AutoEncoder
+    
+    def get_input(self, x: Any) -> Any:
+        return x
+
+    def encode(self, x: Any, *args, **kwargs) -> Any:
+        return self.encoder(x)
+
+    def decode(self, x: Any, **decoder_kwargs) -> Any:
+        # Handle multi-view data: collapse batch and frame dimensions
+        if len(x.shape) == 5:  # [batch, frames, channels, height, width]
+            batch_size, num_frames = x.shape[:2]
+            x = rearrange(x, "b f c h w -> (b f) c h w")
+            # ! - ugly HACKY AF; but we essentially counteract @diffusion's decode_first_stage
+            # this makes it so that we avoid double scaling (clean this up later for final release)
+            decoded = self.module.decode(x * self.scale_factor, **decoder_kwargs)
+            # Reshape back to multi-view format
+            decoded = rearrange(decoded, "(b f) c h w -> b f c h w", b=batch_size, f=num_frames)
+            return decoded
+        else:
+            # Handle regular data
+            return self.module.decode(x, **decoder_kwargs)
 
 
 class AEIntegerWrapper(nn.Module):

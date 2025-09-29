@@ -23,7 +23,7 @@ class Denoiser(nn.Module):
     def forward(
         self,
         network: nn.Module,
-        input: torch.Tensor,
+        input: torch.Tensor, # noisy latents
         sigma: torch.Tensor,
         cond: Dict,
         **additional_model_inputs,
@@ -35,8 +35,9 @@ class Denoiser(nn.Module):
         c_noise = self.possibly_quantize_c_noise(c_noise.reshape(sigma_shape))
         
         if "replace" in cond:
-            x, mask = cond["replace"].split((input.shape[-3], 1), dim=-3) # replace with clean latent replace with clean latent
-            input = input * (1 - mask) + x * mask
+            # TODO: only make ref image clean_latent; all others need to be sampled
+            x, ref_mask = cond["replace"].split((input.shape[-3], 1), dim=-3) # 'x' is clean latent
+            input = input * (1 - ref_mask) + x * ref_mask
             
         return (
             network(input * c_in, c_noise, cond, **additional_model_inputs) * c_out

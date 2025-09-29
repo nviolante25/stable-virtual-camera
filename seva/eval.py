@@ -1150,13 +1150,13 @@ def create_samplers(
 
 
 def get_value_dict(
-    curr_imgs,
+    curr_imgs, # (T,3,H,W)
     curr_imgs_clip,
     curr_input_frame_indices,
-    curr_c2ws,
-    curr_Ks,
-    curr_input_camera_indices,
-    all_c2ws,
+    curr_c2ws, # (T,3,4)
+    curr_Ks, # (T,3,3)
+    curr_input_camera_indices, # (T,)
+    all_c2ws, # (num_images,3,4)
     camera_scale,
 ):
     assert sorted(curr_input_camera_indices) == sorted(
@@ -1183,11 +1183,11 @@ def get_value_dict(
     valid_mask = camera_dist_2med <= torch.clamp(
         torch.quantile(camera_dist_2med, 0.97) * 10,
         max=1e6,
-    )
+    ) # i think this is to prevent huge outliers?
     c2w[:, :3, 3] -= ref_c2ws[valid_mask, :3, 3].mean(0, keepdim=True)
     w2c = torch.linalg.inv(c2w)
 
-    # camera normalization
+    # camera scaling
     camera_dists = c2w[:, :3, 3].clone()
     translation_scaling_factor = (
         camera_scale
@@ -1279,11 +1279,12 @@ def do_sample(
             "concat": uc_concat,
             "dense_vector": uc_dense_vector,
         }
+
         unload_model(ae)
         unload_model(conditioner)
 
         additional_model_inputs = {"num_frames": T}
-        additional_sampler_inputs = {
+        additional_sampler_inputs = { # may not need if not using MVCFG
             "c2w": value_dict["c2w"].to("cuda"),
             "K": value_dict["K"].to("cuda"),
             "input_frame_mask": value_dict["cond_frames_mask"].to("cuda"),
@@ -1462,6 +1463,8 @@ def run_one_scene(
     test_c2ws = camera_cond["c2w"][test_indices]
     test_Ks = camera_cond["K"][test_indices]
 
+    # these are given from the dataloader
+
     if options.get("save_input", True):
         save_output(
             {"/image": input_imgs},
@@ -1583,6 +1586,7 @@ def run_one_scene(
                 all_c2ws=camera_cond["c2w"],
                 camera_scale=options.get("camera_scale", 2.0),
             )
+            # c2ws are transformed from center + scaling
             samplers = create_samplers(
                 options["guider_types"],
                 discretization,

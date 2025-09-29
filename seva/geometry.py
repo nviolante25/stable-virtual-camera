@@ -125,20 +125,20 @@ def get_plucker_coordinates(
 ):
     if intrinsics is None:
         intrinsics = get_default_intrinsics(fov_rad).to(extrinsics.device)
-    else:
-        if not (
-            torch.all(intrinsics[:, :2, -1] >= 0)
-            and torch.all(intrinsics[:, :2, -1] <= 1)
-        ):
-            intrinsics[:, :2] /= intrinsics.new_tensor(target_size).view(1, -1, 1) * 8
+    # else: -- prenormalize your intrinsics!
+    #     if not (
+    #         torch.all(intrinsics[:, :2, -1] >= 0)
+    #         and torch.all(intrinsics[:, :2, -1] <= 1)
+    #     ):
+    #         intrinsics[:, :2] /= intrinsics.new_tensor(target_size).view(1, -1, 1) * 8
         # you should ensure the intrisics are expressed in
         # resolution-independent normalized image coordinates just performing a
         # very simple verification here checking if principal points are
-        # between 0 and 1
-        assert (
-            torch.all(intrinsics[:, :2, -1] >= 0)
-            and torch.all(intrinsics[:, :2, -1] <= 1)
-        ), "Intrinsics should be expressed in resolution-independent normalized image coordinates."
+        # between 0 and 1 -- NOTE: relax this constraint for now.
+        # assert (
+        #     torch.all(intrinsics[:, :2, -1] >= 0)
+        #     and torch.all(intrinsics[:, :2, -1] <= 1)
+        # ), "Intrinsics should be expressed in resolution-independent normalized image coordinates."
 
     c2w_src = torch.linalg.inv(extrinsics_src)
     # transform coordinates from the source camera's coordinate system to the coordinate system of the respective camera

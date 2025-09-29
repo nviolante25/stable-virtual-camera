@@ -65,7 +65,8 @@ data:
   target: sgm.data.mnist.MNISTLoader
   params:
     batch_size: 512
-    num_workers: 48
+    num_workers: 12
+    prefetch_factor: 1
 
 lightning:
   modelcheckpoint:
@@ -81,9 +82,10 @@ lightning:
       target: main.ImageLogger
       params:
         disabled: False
-        batch_frequency: 1000
+        batch_frequency: 1 # defalt every $this steps, log once
         max_images: 16
         increase_log_steps: True
+        log_on_batch_idx: True
         log_first_step: False
         log_images_kwargs:
           use_ema_scope: False
@@ -95,4 +97,4 @@ lightning:
     benchmark: True
     num_sanity_val_steps: 0
     accumulate_grad_batches: 1
-    max_epochs: 20
+    max_epochs: 1

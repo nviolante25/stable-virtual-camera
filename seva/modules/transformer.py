@@ -3,6 +3,7 @@ import torch.nn.functional as F
 from einops import rearrange, repeat
 from torch import nn
 from torch.nn.attention import SDPBackend, sdpa_kernel
+from torch.utils.checkpoint import checkpoint
 
 
 class GEGLU(nn.Module):
@@ -63,13 +64,16 @@ class Attention(nn.Module):
         context = context if context is not None else x
         k = self.to_k(context)
         v = self.to_v(context)
+
         q, k, v = map(
-            lambda t: rearrange(t, "b l (h d) -> b h l d", h=self.heads),
+            lambda t: rearrange(t, "b l (h d) -> b h l d", h=self.heads).contiguous(),
             (q, k, v),
         )
         with sdpa_kernel(SDPBackend.FLASH_ATTENTION):
-            out = F.scaled_dot_product_attention(q, k, v)
-        out = rearrange(out, "b h l d -> b l (h d)")
+            out = F.scaled_dot_product_attention(q, k, v).contiguous()
+        
+        # Convert back to original dtype
+        out = rearrange(out, "b h l d -> b l (h d)").contiguous()
         out = self.to_out(out)
         return out
 
@@ -146,12 +150,12 @@ class TransformerBlockTimeMix(nn.Module):
         self, x: torch.Tensor, context: torch.Tensor, num_frames: int
     ) -> torch.Tensor:
         _, s, _ = x.shape
-        x = rearrange(x, "(b t) s c -> (b s) t c", t=num_frames)
+        x = rearrange(x, "(b t) s c -> (b s) t c", t=num_frames).contiguous()
         x = self.ff_in(self.norm_in(x)) + x
         x = self.attn1(self.norm1(x), context=None) + x
         x = self.attn2(self.norm2(x), context=context) + x
         x = self.ff(self.norm3(x))
-        x = rearrange(x, "(b s) t c -> (b t) s c", s=s)
+        x = rearrange(x, "(b s) t c -> (b t) s c", s=s).contiguous()
         return x
 
 
@@ -181,7 +185,6 @@ class MultiviewTransformer(nn.Module):
         self.in_channels = in_channels
         self.name = name
         self.unflatten_names = unflatten_names
-
         inner_dim = n_heads * d_head
         self.norm = nn.GroupNorm(32, in_channels, eps=1e-6)
         self.proj_in = nn.Linear(in_channels, inner_dim)
@@ -212,7 +215,7 @@ class MultiviewTransformer(nn.Module):
             ]
         )
 
-    def forward(
+    def _forward(
         self, x: torch.Tensor, context: torch.Tensor, num_frames: int
     ) -> torch.Tensor:
         assert context.ndim == 3
@@ -229,19 +232,32 @@ class MultiviewTransformer(nn.Module):
             context = context[::num_frames]
 
         x = self.norm(x)
-        x = rearrange(x, "b c h w -> b (h w) c")
+        x = rearrange(x, "b c h w -> b (h w) c").contiguous()
         x = self.proj_in(x)
 
         for block, mix_block in zip(self.transformer_blocks, self.time_mix_blocks):
             if self.name in self.unflatten_names:
-                x = rearrange(x, "(b t) (h w) c -> b (t h w) c", t=num_frames, h=h, w=w)
+                x = rearrange(x, "(b t) (h w) c -> b (t h w) c", t=num_frames, h=h, w=w).contiguous()
             x = block(x, context=context)
             if self.name in self.unflatten_names:
-                x = rearrange(x, "b (t h w) c -> (b t) (h w) c", t=num_frames, h=h, w=w)
+                x = rearrange(x, "b (t h w) c -> (b t) (h w) c", t=num_frames, h=h, w=w).contiguous()
             x_mix = mix_block(x, context=time_context, num_frames=num_frames)
             x = self.time_mixer(x_spatial=x, x_temporal=x_mix)
 
         x = self.proj_out(x)
-        x = rearrange(x, "b (h w) c -> b c h w", h=h, w=w)
+        x = rearrange(x, "b (h w) c -> b c h w", h=h, w=w).contiguous()
         out = x + x_in
         return out
+
+    def forward(self, x: torch.Tensor, context: torch.Tensor, num_frames: int) -> torch.Tensor:
+        if self.training:
+            return checkpoint(
+                self._forward,
+                x,
+                context,
+                num_frames,
+                preserve_rng_state=False,
+                use_reentrant=False,
+            )
+        else:
+            return self._forward(x, context, num_frames)

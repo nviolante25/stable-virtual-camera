@@ -49,25 +49,38 @@ class SevaWrapper(IdentityWrapper):
     def forward(
         self, x: torch.Tensor, t: torch.Tensor, c: dict, **kwargs
     ) -> torch.Tensor:
-        x = torch.cat((x, c.get("concat", torch.Tensor([]).type_as(x))), dim=2)
-
-
+        # here, 'x' is post-replaced latents * EpsScaling c_in; t is shape [B]; c is cond dict
         b = x.shape[0]
-        f = x.shape[1]
+        f = x.shape[1] # num_images
         x = rearrange(x, "b f c h w -> (b f) c h w")
         dense_y=rearrange(c["plucker"], "b f c h w -> (b f) c h w")
+        concat = c.get("concat", torch.Tensor([]).type_as(x))
+        if concat.ndim > 1:
+            concat = repeat(concat, "b f c h w -> (b f) c h w", f=f)
+        x = torch.cat((x, concat), dim=1) # TODO: x + input_mask + pluckers + ic_mask!
 
         t = repeat(t, "b -> (b f)", f=f)
         y = repeat(c["crossattn"], "b 1 c -> (b f) 1 c", f=f)
-
 
         out = self.diffusion_model(
             x,
             t=t,
             y=y,
             dense_y=dense_y,
-            num_frames=f,
-            **kwargs,
+            num_frames=f
+            # **kwargs,
         )
         out = rearrange(out, "(b f) c h w -> b f c h w", f=f)
         return out
+
+# essentially SGMWrapper
+class SevaWrapperV2(IdentityWrapper):
+    def forward(
+        self, x: torch.Tensor, t: torch.Tensor, c: dict, **kwargs
+    ) -> torch.Tensor:
+        x = torch.cat((x, c.get("concat", torch.Tensor([]).type_as(x))), dim=1)
+        dense_y = c["dense_vector"]
+        y = c["crossattn"]
+        return self.diffusion_model(
+            x, t, y, dense_y=dense_y, **kwargs
+        )

@@ -1,5 +1,5 @@
 model:
-  base_learning_rate: 1.0e-4
+  base_learning_rate: 1.0e-5
   target: sgm.models.diffusion.DiffusionEngine
   params:
     scale_factor: 0.18215
@@ -10,9 +10,9 @@ model:
     scheduler_config:
       target: sgm.lr_scheduler.LambdaLinearScheduler
       params:
-        warm_up_steps: [10000]
+        warm_up_steps: [1]
         cycle_lengths: [10000000000000]
-        f_start: [1.e-2]
+        f_start: [1.]
         f_max: [1.]
         f_min: [1.]
 
@@ -24,7 +24,12 @@ model:
         scaling_config:
           target: sgm.modules.diffusionmodules.denoiser_scaling.EpsScaling
         discretization_config:
-          target: sgm.modules.diffusionmodules.discretizer.LegacyDDPMDiscretization
+          target: sgm.modules.diffusionmodules.discretizer.SevaDDPMDiscretization
+          params:
+            num_timesteps: 1000
+            linear_start: 5e-06
+            linear_end: 0.012
+            log_snr_shift: 2.4
 
     network_config:
       target: seva.modules.lora_wrapper.SevaLoRAWrapper
@@ -101,30 +106,48 @@ model:
             num_idx: 1000
 
             discretization_config:
-              target: sgm.modules.diffusionmodules.discretizer.LegacyDDPMDiscretization
+              target: sgm.modules.diffusionmodules.discretizer.SevaDDPMDiscretization
 
     sampler_config:
       target: sgm.modules.diffusionmodules.sampling.EulerEDMSampler
       params:
-        num_steps: 150
+        num_steps: 50
 
         discretization_config:
-          target: sgm.modules.diffusionmodules.discretizer.LegacyDDPMDiscretization
+          target: sgm.modules.diffusionmodules.discretizer.SevaDDPMDiscretization
 
+        # guider_config:
+          # target: sgm.modules.diffusionmodules.guiders.IdentityGuider
         guider_config:
-          target: sgm.modules.diffusionmodules.guiders.VanillaCFG
+          target: seva.sampling.MultiviewCFG
           params:
-            scale: 3.0
+            cfg_min: 1.2
 
 data:
-  target: sgm.data.dataset.DL3DVDataModuleFromConfig
+  target: seva.data.mvh_dataloader.MVHumanNetLoader
   params:
-    dataset_dir: /workspace/leovol/dl3dv-480P-new
-    colmap_dir: /workspace/leovol/dl3dv-colmap-new
-    latents_dir: /workspace/leovol/dl3dv-latents
+    root_dir: /workspace/datasetvol/mvhuman_data/mv_captures
+    latents_dir: /workspace/datasetvol/mvhuman_data/mv_latents
+    # root_dir: /home/stone/dev/datasets/mvhumannet_samples/mv_captures
+    # colmap_dir: /home/stone/dev/datasets/dl3dv_samples/dl3dv-colmap-new/
+    # latents_dir: /home/stone/dev/datasets/mvhumannet_samples/mv_latents
     batch_size: 2
-    num_workers: 16
-    num_images: 8
+    num_workers: 8
+    num_images: 9
+    step_size: 100
+    preload_path: /workspace/datasetvol/mvhuman_data/mv_captures/preloaded_filepaths.json
+# data:
+#   target: sgm.data.dataset.DL3DVDataModuleFromConfig
+#   params:
+#     dataset_dir: /workspace/leovol/dl3dv-480P-new
+#     colmap_dir: /workspace/leovol/dl3dv-colmap-new
+#     latents_dir: /workspace/leovol/dl3dv-latents
+#     # dataset_dir: /home/stone/dev/datasets/dl3dv_samples/dl3dv-480P-new/
+#     # colmap_dir: /home/stone/dev/datasets/dl3dv_samples/dl3dv-colmap-new/
+#     # latents_dir: /home/stone/dev/datasets/dl3dv_samples/dl3dv-latents/
+#     batch_size: 4
+#     num_workers: 16
+#     num_images: 8
 
 lightning:
   modelcheckpoint:
@@ -141,7 +164,7 @@ lightning:
       params:
         disabled: False
         enable_autocast: False
-        batch_frequency: 100
+        batch_frequency: 1000
         max_images: 8
         increase_log_steps: False
         log_first_step: False
@@ -151,8 +174,8 @@ lightning:
           n_rows: 2
 
   trainer:
-    devices: 0,1
-    benchmark: True
+    devices: 0,1,
+    benchmark: False
     num_sanity_val_steps: 0
     accumulate_grad_batches: 1
-    max_epochs: 2000
+    max_epochs: 10000

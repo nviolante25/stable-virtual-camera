@@ -1,0 +1,194 @@
+model:
+  base_learning_rate: 1.0e-4
+  target: sgm.models.diffusion.DiffusionEngine
+  params:
+    scale_factor: 0.18215
+    disable_first_stage_autocast: True
+    input_key: clean_latent
+    network_wrapper: sgm.modules.diffusionmodules.wrappers.SevaWrapper
+
+    scheduler_config:
+      target: sgm.lr_scheduler.LambdaLinearScheduler
+      params:
+        warm_up_steps: [1]
+        cycle_lengths: [10000000000000]
+        f_start: [1.]
+        f_max: [1.]
+        f_min: [1.]
+
+    denoiser_config:
+      target: sgm.modules.diffusionmodules.denoiser.DiscreteDenoiser
+      params:
+        num_idx: 1000
+
+        scaling_config:
+          target: sgm.modules.diffusionmodules.denoiser_scaling.EpsScaling
+        discretization_config:
+          target: sgm.modules.diffusionmodules.discretizer.SevaDDPMDiscretization
+          params:
+            num_timesteps: 1000
+            linear_start: 5e-06
+            linear_end: 0.012
+            log_snr_shift: 2.4
+
+    network_config:
+      target: seva.modules.lora_wrapper.SevaLoRAWrapper
+      params:
+        seva_model_config:
+          # target: seva.utils.load_model
+          target: seva.model.Seva
+          params:
+            params:
+              in_channels: 16 # 11 + 5
+              model_channels: 320  # for Seva.time_embed
+              out_channels: 4
+              num_frames: 8
+              num_res_blocks: 2
+              attention_resolutions: [4, 2, 1]
+              channel_mult: [1, 2, 4, 4]
+              num_head_channels: 64
+              transformer_depth: [1, 1, 1, 1]
+              context_dim: 1024
+              dense_in_channels: 6
+              dropout: 0.0
+              unflatten_names: ["middle_ds8", "output_ds4", "output_ds2"]
+              ckpt_path: null
+        self_attn_rank: 128
+        cross_attn_rank: 256
+        ff_rank: 128
+        alpha: 16.0
+        dropout: 0.0
+        target_modules: ["TransformerBlockTimeMix", "MultiviewTransformer", "TransformerBlock"]
+        keys_to_lora: ["q", "k", "v"]
+        excluded_modules: []
+
+    conditioner_config:
+      target: sgm.modules.GeneralConditioner
+      params:
+        emb_models:
+          - is_trainable: False
+            ucg_rate: 0.0
+            input_key: plucker
+            target: sgm.modules.encoders.modules.IdentityEncoder
+
+          - is_trainable: False
+            ucg_rate: 0.0
+            input_key: concat
+            target: sgm.modules.encoders.modules.IdentityEncoder
+
+          - is_trainable: False
+            ucg_rate: 0.0
+            input_key: replace
+            target: sgm.modules.encoders.modules.IdentityEncoder
+
+          - is_trainable: False
+            ucg_rate: 0.0
+            input_key: mask
+            target: sgm.modules.encoders.modules.IdentityEncoder
+
+          - is_trainable: False # crossattn
+            ucg_rate: 0.0
+            input_keys: ["frames", "mask"]
+            target: sgm.modules.encoders.modules.SevaFrozenOpenCLIPImageEmbedder
+            params:
+              unsqueeze_dim: True
+
+    first_stage_config:
+      target: sgm.modules.encoders.modules.SevaAutoencoder
+      params:
+        scale_factor: 1.0 # already scaled internally
+
+    loss_fn_config:
+      target: sgm.modules.diffusionmodules.loss.StandardDiffusionLoss
+      params:
+        loss_weighting_config:
+          target: sgm.modules.diffusionmodules.loss_weighting.SimVSWeighting
+        sigma_sampler_config:
+          target: sgm.modules.diffusionmodules.sigma_sampling.DiscreteSampling
+          params:
+            num_idx: 1000
+
+            discretization_config:
+              target: sgm.modules.diffusionmodules.discretizer.SevaDDPMDiscretization
+
+    sampler_config:
+      target: sgm.modules.diffusionmodules.sampling.EulerEDMSampler
+      params:
+        num_steps: 50
+
+        discretization_config:
+          target: sgm.modules.diffusionmodules.discretizer.SevaDDPMDiscretization
+
+        # guider_config:
+          # target: sgm.modules.diffusionmodules.guiders.IdentityGuider
+        guider_config:
+          target: seva.sampling.MultiviewCFG
+          params:
+            cfg_min: 1.2
+
+data:
+  target: seva.data.mvh_dataloader.MVHumanNetLoader
+  params:
+    root_dir: /workspace/datasetvol/mvhuman_data/mv_captures
+    # latents_dir: /workspace/datasetvol/mvhuman_data/mv_latents
+    # root_dir: /home/stone/dev/datasets/mvhumannet_samples/mv_captures
+    # colmap_dir: /home/stone/dev/datasets/dl3dv_samples/dl3dv-colmap-new/
+    # latents_dir: /home/stone/dev/datasets/mvhumannet_samples/mv_latents
+    batch_size: 1
+    num_workers: 8
+    num_images: 8
+    step_size: 60
+    only_include: "100001-100500"
+    val_include: "101001-101002"
+    preload_path: /workspace/datasetvol/mvhuman_data/mv_captures/preloaded_filepaths.json
+    maximal_crop: True
+    random_crop: True
+    use_inconsistent: True
+# data:
+#   target: sgm.data.dataset.DL3DVDataModuleFromConfig
+#   params:
+#     dataset_dir: /workspace/leovol/dl3dv-480P-new
+#     colmap_dir: /workspace/leovol/dl3dv-colmap-new
+#     latents_dir: /workspace/leovol/dl3dv-latents
+#     # dataset_dir: /home/stone/dev/datasets/dl3dv_samples/dl3dv-480P-new/
+#     # colmap_dir: /home/stone/dev/datasets/dl3dv_samples/dl3dv-colmap-new/
+#     # latents_dir: /home/stone/dev/datasets/dl3dv_samples/dl3dv-latents/
+#     batch_size: 4
+#     num_workers: 16
+#     num_images: 8
+
+lightning:
+  modelcheckpoint:
+    params:
+      every_n_train_steps: 5000
+      save_top_k: -1
+      save_on_train_epoch_end: False
+
+  callbacks:
+    metrics_over_trainsteps_checkpoint:
+      params:
+        every_n_train_steps: 25000
+
+    image_logger:
+      target: main.ImageLogger
+      params:
+        log_train: True
+        disabled: False
+        enable_autocast: False
+        batch_frequency: 1000
+        max_images: 8
+        increase_log_steps: True
+        log_first_step: False
+        log_images_kwargs:
+          use_ema_scope: False
+          N: 1
+          n_rows: 2
+
+  trainer:
+    val_check_interval: 0.25 # around every 2k iterations
+    devices: 0,1,
+    benchmark: False
+    num_sanity_val_steps: 0
+    accumulate_grad_batches: 1
+    max_epochs: 100
+    precision: "16-mixed"

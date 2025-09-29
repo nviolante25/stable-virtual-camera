@@ -2,6 +2,8 @@ from dataclasses import dataclass, field
 
 import torch
 import torch.nn as nn
+import pytorch_lightning as pl
+from pytorch_lightning.utilities import rank_zero_only
 
 from seva.modules.layers import (
     Downsample,
@@ -12,7 +14,10 @@ from seva.modules.layers import (
     timestep_embedding,
 )
 from seva.modules.transformer import MultiviewTransformer
+from typing import Union
 
+
+from safetensors.torch import load_file
 
 @dataclass
 class SevaParams(object):
@@ -38,7 +43,7 @@ class SevaParams(object):
 
 
 class Seva(nn.Module):
-    def __init__(self, params: SevaParams) -> None:
+    def __init__(self, params: SevaParams, freeze_layers:bool=False, load_pretrained:bool=True) -> None:
         super().__init__()
         self.params = params
         self.model_channels = params.model_channels
@@ -173,12 +178,37 @@ class Seva(nn.Module):
             nn.SiLU(),
             nn.Conv2d(self.model_channels, params.out_channels, 3, padding=1),
         )
+
+        if load_pretrained:
+            from seva.utils import print_load_warning
+            state_dict = load_seva_state_dict(params)
+            missing, unexpected = self.load_state_dict(state_dict, assign=True)
+            print_load_warning(missing, unexpected)
+        
         if params.ckpt_path is not None:
-            from safetensors.torch import load_file
             from seva.utils import print_load_warning
             state_dict = load_file(params.ckpt_path)
             missing, unexpected = self.load_state_dict(state_dict, strict=False, assign=True)
             print_load_warning(missing, unexpected)
+
+        if freeze_layers:
+            self.freeze()
+    
+    def freeze(self, layers: list[str] = ["middle", "output"]):
+        if "input" in layers:
+            input_param_gen = self.input_blocks.named_parameters()
+            for (name, param) in input_param_gen:
+                if name.startswith("0.0"):
+                    param.requires_grad = True
+                else:
+                    param.requires_grad = False
+
+        if "middle" in layers:
+            for param in self.middle_block.parameters():
+                param.requires_grad = False
+        if "output" in layers:
+            for param in self.output_blocks.parameters():
+                param.requires_grad = False
 
     def forward(
         self,
@@ -220,18 +250,48 @@ class Seva(nn.Module):
                 num_frames=num_frames,
             )
         h = h.type(x.dtype)
-        return self.out(h)
+        return self.out(h) # [B*num_images, C=4, H=72, W=72]
 
 
+def load_seva_state_dict(
+    params: SevaParams = SevaParams(),
+    pretrained_model_name_or_path: str = "stabilityai/stable-virtual-camera",
+    weight_name: str = "model.safetensors",
+    device: str | torch.device = "cuda",
+):
+    from seva.utils import download_pretrained_checkpoint
+    state_dict = download_pretrained_checkpoint(pretrained_model_name_or_path, weight_name, device)
+    input_block_c1 = state_dict["input_blocks.0.0.weight"] # reshape this based on params.in_channels
+    input_block_b1 = state_dict["input_blocks.0.0.bias"]
+    new_input_block = nn.Conv2d(params.in_channels, params.model_channels, 3, padding=1)
+    new_input_block.weight.data[:, :input_block_c1.shape[1], :, :] = input_block_c1
+    new_input_block.weight.data[:, input_block_c1.shape[1]:, :, :] = 0 # zeros for the rest
+    new_input_block.bias.data[:input_block_b1.shape[0]] = input_block_b1
+    new_input_block.bias.data[input_block_b1.shape[0]:] = 0 # zeros for the rest
+    new_state_dict = {
+        "input_blocks.0.0.weight": new_input_block.weight,
+        "input_blocks.0.0.bias": new_input_block.bias,
+    }
+    for k, v in state_dict.items():
+        if not k.startswith("input_blocks.0.0"):
+            new_state_dict[k] = v
+
+    return new_state_dict
+
+
+# for compatibility with SGM
 class SGMWrapper(nn.Module):
-    def __init__(self, module: Seva):
+    def __init__(self, module: Seva): # or SevaLoRAWrappers
         super().__init__()
         self.module = module
 
     def forward(
         self, x: torch.Tensor, t: torch.Tensor, c: dict, **kwargs
     ) -> torch.Tensor:
+        # c: crossattn, concat, dense_vector
+        # kwargs 'num_frames'
         x = torch.cat((x, c.get("concat", torch.Tensor([]).type_as(x))), dim=1)
+        # 16,11,72,72 (concat is 7, latent x is 4)
         return self.module(
             x,
             t=t,
@@ -239,3 +299,29 @@ class SGMWrapper(nn.Module):
             dense_y=c["dense_vector"],
             **kwargs,
         )
+
+# class SevaLightningModule(pl.LightningModule):
+#     def __init__(self, seva_model: Seva):
+#         super().__init__()
+#         self.model = seva_model
+        
+#     def forward(self, x, t, y, dense_y, num_frames=None):
+#         return self.model(x, t, y, dense_y, num_frames)
+
+    # this is never used or reached
+    # @rank_zero_only
+    # def log_images(self, input_tensor, output_tensor, target_tensor):
+    #     print("within SevaLightningModule::log_images!")
+    #     # Assume [B,C,H,W] and normalize to [0,1] for wandb.Image
+    #     images = []
+
+    #     for i in range(min(4, input_tensor.size(0))):  # limit to first 4 images
+    #         img_grid = torchvision.utils.make_grid([
+    #             input_tensor[i].detach().cpu(),
+    #             output_tensor[i].detach().cpu(),
+    #             target_tensor[i].detach().cpu(),
+    #         ], nrow=3, normalize=True, scale_each=True)
+
+    #         images.append(wandb.Image(img_grid, caption=f"Sample {i}"))
+
+    #     self.logger.experiment.log({"val/reconstructions": images, "global_step": self.global_step})

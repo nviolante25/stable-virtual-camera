@@ -198,6 +198,10 @@ def parse_task(
             c2ws = c2ws[sampled_indices]
             Ks = Ks[sampled_indices]
 
+            torch.save(c2ws, "debug_tensors/demo_c2ws.pt")
+            torch.save(Ks, "debug_tensors/demo_Ks.pt")
+            torch.save(sampled_indices, "debug_tensors/demo_sampled_indices.pt")
+
             # absolute to relative indices
             input_indices = compute_relative_inds(
                 sampled_indices,

@@ -143,7 +143,7 @@ class DiscreteDenoiser(object):
         sigma = append_dims(sigma, input.ndim)
         c_skip, c_out, c_in, c_noise = self.scaling(sigma)
         c_noise = self.sigma_to_idx(c_noise.reshape(sigma_shape))
-        if "replace" in cond:
+        if "replace" in cond: # only replace reference frame latent only
             x, mask = cond.pop("replace").split((input.shape[1], 1), dim=1)
             input = input * (1 - mask) + x * mask
         return (
@@ -168,23 +168,53 @@ class MultiviewScaleRule(object):
         K: torch.Tensor,
         input_frame_mask: torch.Tensor,
     ) -> torch.Tensor:
-        c2w_input = c2w[input_frame_mask]
-        rotation_diff = get_camera_dist(c2w, c2w_input, mode="rotation").min(-1).values
-        translation_diff = (
-            get_camera_dist(c2w, c2w_input, mode="translation").min(-1).values
-        )
-        K_diff = (
-            ((K[:, None] - K[input_frame_mask][None]).flatten(-2) == 0).all(-1).any(-1)
-        )
-        close_frame = (rotation_diff < 10.0) & (translation_diff < 1e-5) & K_diff
-        if isinstance(scale, torch.Tensor):
-            scale = scale.clone()
-            scale[close_frame] = self.min_scale
-        elif isinstance(scale, float):
-            scale = torch.where(close_frame, self.min_scale, scale)
+        batch_dim = c2w.shape[0] if c2w.dim() == 4 else None
+        
+        if batch_dim is not None:
+            # Process each batch separately to maintain batch independence
+            scales = []
+            for b in range(batch_dim):
+                c2w_batch = c2w[b]  # [num_images, 4, 4]
+                K_batch = K[b]      # [num_images, 3, 3]
+                input_frame_mask_batch = input_frame_mask[b]  # [num_images]
+                
+                c2w_input_batch = c2w_batch[input_frame_mask_batch]
+                rotation_diff = get_camera_dist(c2w_batch, c2w_input_batch, mode="rotation").min(-1).values
+                translation_diff = get_camera_dist(c2w_batch, c2w_input_batch, mode="translation").min(-1).values
+                
+                K_diff = (
+                    ((K_batch[:, None] - K_batch[input_frame_mask_batch][None]).flatten(-2) == 0).all(-1).any(-1)
+                )
+                close_frame = (rotation_diff < 10.0) & (translation_diff < 1e-5) & K_diff
+                
+                if isinstance(scale, torch.Tensor):
+                    scale_batch = scale.clone()
+                    scale_batch[close_frame] = self.min_scale
+                elif isinstance(scale, float):
+                    scale_batch = torch.where(close_frame, self.min_scale, scale)
+                else:
+                    raise ValueError(f"Invalid scale type {type(scale)}.")
+                
+                scales.append(scale_batch)
+            
+            return torch.stack(scales)  # [batch_dim, num_images]
         else:
-            raise ValueError(f"Invalid scale type {type(scale)}.")
-        return scale
+            # Original logic for non-batched case
+            c2w_input = c2w[input_frame_mask]
+            rotation_diff = get_camera_dist(c2w, c2w_input, mode="rotation").min(-1).values
+            translation_diff = get_camera_dist(c2w, c2w_input, mode="translation").min(-1).values
+            K_diff = (
+                ((K[:, None] - K[input_frame_mask][None]).flatten(-2) == 0).all(-1).any(-1)
+            )
+            close_frame = (rotation_diff < 10.0) & (translation_diff < 1e-5) & K_diff
+            if isinstance(scale, torch.Tensor):
+                scale = scale.clone()
+                scale[close_frame] = self.min_scale
+            elif isinstance(scale, float):
+                scale = torch.where(close_frame, self.min_scale, scale)
+            else:
+                raise ValueError(f"Invalid scale type {type(scale)}.")
+            return scale
 
 
 class ConstantScaleSchedule(object):
@@ -208,7 +238,7 @@ class ConstantGuidance(object):
         cond: torch.Tensor,
         scale: float | torch.Tensor,
     ) -> torch.Tensor:
-        if isinstance(scale, torch.Tensor) and len(scale.shape) == 1:
+        if isinstance(scale, torch.Tensor):
             scale = append_dims(scale, cond.ndim)
         return uncond + scale * (cond - uncond)
 
@@ -234,9 +264,10 @@ class VanillaCFG(object):
         c_out = dict()
 
         for k in c:
-            if k in ["vector", "crossattn", "concat", "replace", "dense_vector"]:
+            if k in ["vector", "crossattn", "concat", "mask", "plucker", "replace", "dense_vector"]:
                 c_out[k] = torch.cat((uc[k], c[k]), 0)
             else:
+                print("k:", k)
                 assert c[k] == uc[k]
                 c_out[k] = c[k]
         return torch.cat([x] * 2), torch.cat([s] * 2), c_out
@@ -311,12 +342,14 @@ class EulerEDMSampler(object):
         s_tmax=float("inf"),
         s_noise=1.0,
     ):
-        self.num_steps = num_steps
-        self.discretization = discretization
-        self.guider = guider
+        # from BaseDiffusionSampler
+        self.num_steps = num_steps  
+        self.discretization = discretization 
+        self.guider = guider 
         self.verbose = verbose
         self.device = device
 
+        # from EDMSampler
         self.s_churn = s_churn
         self.s_tmin = s_tmin
         self.s_tmax = s_tmax
@@ -344,7 +377,7 @@ class EulerEDMSampler(object):
             )
         return sigma_generator
 
-    def sampler_step(
+    def sampler_step( # EDMSampler doesn't have guider_kwargs, but is NEEDED!
         self,
         sigma: torch.Tensor,
         next_sigma: torch.Tensor,
@@ -356,13 +389,16 @@ class EulerEDMSampler(object):
         gamma: float = 0.0,
         **guider_kwargs,
     ) -> torch.Tensor:
-        sigma_hat = sigma * (gamma + 1.0) + 1e-6
+        sigma_hat = sigma * (gamma + 1.0) + 1e-6 # 1e-6 term not in EDMSampler
+        # gamma will be 0 anways, so omitted portion doesn't affect anything
 
         eps = torch.randn_like(x) * self.s_noise
         x = x + eps * append_dims(sigma_hat**2 - sigma**2, x.ndim) ** 0.5
 
+        # this is just BaseDiffusionSampler denoise func
         denoised = denoiser(*self.guider.prepare_inputs(x, sigma_hat, cond, uc))
-        denoised = self.guider(denoised, sigma_hat, scale, **guider_kwargs)
+        denoised = self.guider(denoised, sigma_hat, **guider_kwargs)
+
         d = to_d(x, sigma_hat, denoised)
         dt = append_dims(next_sigma - sigma_hat, x.ndim)
         return x + dt * d

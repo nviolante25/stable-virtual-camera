@@ -18,12 +18,21 @@ class MNISTDataDictWrapper(Dataset):
 
 
 class MNISTLoader(pl.LightningDataModule):
-    def __init__(self, batch_size, num_workers=0, prefetch_factor=2, shuffle=True):
+    def __init__(self, batch_size, num_workers=0, prefetch_factor=2, shuffle=True, seva_local=False):
         super().__init__()
 
         transform = transforms.Compose(
             [transforms.ToTensor(), transforms.Lambda(lambda x: x * 2.0 - 1.0)]
         )
+
+        if seva_local:
+            # convert images to RGB tensors instead of binary (for SEVA VAE)
+            transform = transforms.Compose([
+                transforms.Resize(32),
+                transforms.ToTensor(),
+                transforms.Lambda(lambda x: x.repeat(3, 1, 1)),  # Convert to 3 channels
+                transforms.Lambda(lambda x: x * 2.0 - 1.0)
+            ])
 
         self.batch_size = batch_size
         self.num_workers = num_workers

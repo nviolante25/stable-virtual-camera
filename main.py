@@ -22,8 +22,18 @@ from pytorch_lightning.callbacks import Callback
 from pytorch_lightning.loggers import WandbLogger
 from pytorch_lightning.trainer import Trainer
 from pytorch_lightning.utilities import rank_zero_only
-
+from diffusers import AutoencoderKL
+from seva.sampling import MultiviewCFG
 from sgm.util import exists, instantiate_from_config, isheatmap
+import matplotlib.cm as cm
+from matplotlib.image import imread
+
+import threading
+import queue
+from typing import Dict
+from dataclasses import dataclass
+from einops import repeat
+import logging
 
 MULTINODE_HACKS = True
 
@@ -187,6 +197,12 @@ def get_parser(**parser_kwargs):
         default=False,  # TODO: later default to True
         help="log to wandb",
     )
+    parser.add_argument(
+        "--override_ngpu",
+        type=str,
+        default=None,
+        help="Override devices from config (comma-separated, e.g., '0,1,2,3')",
+    )
     if version.parse(torch.__version__) >= version.parse("2.0.0"):
         parser.add_argument(
             "--resume_from_checkpoint",
@@ -203,8 +219,7 @@ def get_parser(**parser_kwargs):
 def get_checkpoint_name(logdir):
     ckpt = os.path.join(logdir, "checkpoints", "last**.ckpt")
     ckpt = natsorted(glob.glob(ckpt))
-    print('available "last" checkpoints:')
-    print(ckpt)
+    
     if len(ckpt) > 1:
         print("got most recent checkpoint")
         ckpt = sorted(ckpt, key=lambda x: os.path.getmtime(x))[-1]
@@ -218,9 +233,12 @@ def get_checkpoint_name(logdir):
             print(e)
             version = 1
         # version = last_version + 1
-    else:
+    elif len(ckpt) == 1:
         # in this case, we only have one "last.ckpt"
         ckpt = ckpt[0]
+        version = 1
+    else:
+        ckpt = None
         version = 1
     melk_ckpt_name = f"last-v{version}.ckpt"
     print(f"Current melk ckpt name: {melk_ckpt_name}")
@@ -306,6 +324,20 @@ class SetupCallback(Callback):
                     pass
 
 
+@dataclass
+class LogTask:
+    """Data class to hold logging task information"""
+    save_dir: str
+    split: str
+    images: Dict[str, torch.Tensor]
+    masks: torch.Tensor
+    global_step: int
+    current_epoch: int
+    batch_idx: int
+    # pl_module: pl.LightningModule
+    logger: WandbLogger
+    scale_factor: float
+
 class ImageLogger(Callback):
     def __init__(
         self,
@@ -320,6 +352,7 @@ class ImageLogger(Callback):
         log_images_kwargs=None,
         log_before_first_step=False,
         enable_autocast=True,
+        log_train=True,
     ):
         super().__init__()
         self.enable_autocast = enable_autocast
@@ -335,6 +368,271 @@ class ImageLogger(Callback):
         self.log_images_kwargs = log_images_kwargs if log_images_kwargs else {}
         self.log_first_step = log_first_step
         self.log_before_first_step = log_before_first_step
+        self.log_train = log_train
+        self.logger = logging.getLogger(f"{__name__}.{self.__class__.__name__}")
+        # for logging
+        with torch.device("cpu"):
+            self.cpu_decoder = AutoencoderKL.from_pretrained(
+                    "stabilityai/stable-diffusion-2-1-base",
+                    subfolder="vae",
+                    force_download=False,
+                    low_cpu_mem_usage=False,
+                ).eval()
+        self.cpu_decoder.requires_grad_(False)
+        self.log_queue = queue.Queue()
+        self.log_thread = None
+        self.shutdown_event = threading.Event()
+        self._start_log_thread()
+
+    def _start_log_thread(self):
+        """Start the logging thread"""
+        if self.log_thread is None:
+            self.log_thread = threading.Thread(target=self._log_worker, daemon=True)
+            self.log_thread.start()
+
+    def _log_worker(self):
+        """Background worker that processes logging tasks from the queue"""
+        self.logger.info("[ImageLogger] Log worker started")
+        
+        # Initialize CPU decoder for the worker thread
+        # with torch.device("cpu"):
+        #     self.cpu_decoder = AutoencoderKL.from_pretrained(
+        #         "stabilityai/stable-diffusion-2-1-base",
+        #         subfolder="vae",
+        #         force_download=False,
+        #         low_cpu_mem_usage=False,
+        #     ).eval()
+        #     self.cpu_decoder.requires_grad_(False)
+            
+        
+        while not self.shutdown_event.is_set():
+            try:
+                # Wait for a task with timeout to allow checking shutdown event
+                task = self.log_queue.get(timeout=1.0)
+                if task is None:  # Shutdown signal
+                    break
+                
+                self.logger.info(f"[ImageLogger] Processing log task for step {task.global_step}")
+                self._process_log_task(task)
+                self.log_queue.task_done()
+            except queue.Empty:
+                continue # polling
+            except Exception as e:
+                self.logger.error(f"[ImageLogger] Error in log worker: {e}")
+                if task is not None:
+                    self.log_queue.task_done()
+        
+        # Process any remaining tasks before exiting
+        self.logger.info("[ImageLogger] Processing remaining tasks in queue...")
+        while True:
+            try:
+                task = self.log_queue.get_nowait()
+                if task is None:
+                    break
+                self.logger.info(f"[ImageLogger] Processing final log task for step {task.global_step}")
+                self._process_log_task(task)
+                self.log_queue.task_done()
+            except queue.Empty:
+                break
+        
+        self.logger.info("[ImageLogger] Log worker stopped")
+
+    def _process_log_task(self, task: LogTask):
+        """Process a single logging task"""
+        try:
+            # Move data to CPU and decode
+            images = {}
+            for k in task.images:
+                if isinstance(task.images[k], torch.Tensor):
+                    images[k] = task.images[k].to("cpu")
+            masks = task.masks
+
+            # Decode latents
+            for k in images:
+                if k == "inputs":
+                    continue  # Already in RGB space
+                if isinstance(images[k], torch.Tensor):
+                    # assuming we use AutoencoderKL
+                    if isinstance(self.cpu_decoder, AutoencoderKL):
+                        images[k] = self.cpu_decoder.decode(images[k] / task.scale_factor).sample
+                    else:
+                        raise Exception("Assumed AutoencoderKL as the cpu_decoder during logging images!")
+                    images[k] = self._convert_valid_log_format(images[k], images["inputs"])
+                    if self.clamp and not isheatmap(images[k]):
+                        images[k] = torch.clamp(images[k], -1.0, 1.0)
+
+            # images["diffmap"] = self.diffmap(images["inputs"], images["samples"])
+
+            # Perform the actual logging
+            self.log_local(
+                task.save_dir, task.split, images, masks,
+                task.global_step, task.current_epoch, task.batch_idx, task.logger, task.scale_factor    
+            )
+            
+        except Exception as e:
+            self.logger.error(f"[ImageLogger] Error processing log task: {e}")
+
+    def _queue_log_task(self, save_dir, split, images, masks, global_step, current_epoch, batch_idx, logger, scale_factor):
+        """Queue a logging task for background processing"""
+        if self.shutdown_event.is_set():
+            self.logger.info("[ImageLogger] Logger is shutting down, skipping log task")
+            return
+            
+        task = LogTask(
+            save_dir=save_dir,
+            split=split,
+            images=images,
+            masks=masks,
+            global_step=global_step,
+            current_epoch=current_epoch,
+            batch_idx=batch_idx,
+            # pl_module=pl_module,
+            logger=logger,
+            scale_factor=scale_factor
+        )
+        
+        try:
+            # Non-blocking put with timeout
+            self.log_queue.put(task, timeout=0.1)
+            self.logger.info(f"[ImageLogger] Queued log task for step {global_step}")
+        except queue.Full:
+            print(f"[ImageLogger] Queue full, skipping log task for step {global_step}")
+
+    def shutdown(self):
+        """Gracefully shutdown the logging thread"""
+        self.logger.info("[ImageLogger] Shutting down logging thread...")
+        self.shutdown_event.set()
+        
+        # Send shutdown signal to queue
+        try:
+            self.log_queue.put(None, timeout=1.0)
+        except queue.Full:
+            pass
+        
+        # Wait for thread to finish (with timeout)
+        if self.log_thread and self.log_thread.is_alive():
+            self.log_thread.join(timeout=8.0 * 60.0) # it can take 8 minutes to log 4 images
+            if self.log_thread.is_alive():
+                self.logger.warning("[ImageLogger] Warning: Log thread did not stop gracefully")
+        
+        self.logger.info("[ImageLogger] Logging thread shutdown complete")
+    
+    def diffmap(self, img1, img2, output_path=None):
+        """
+        Creates a difference map image between two RGB images using per-channel differences
+        and the 'jet' colormap. Blue indicates low difference, red indicates high difference.
+        
+        Args:
+            img1: str (path), np.ndarray, or torch.Tensor
+            img2: str (path), np.ndarray, or torch.Tensor
+            output_path: str, optional path to save the output image
+        
+        Returns:
+            np.ndarray: The difference map as a uint8 RGB image array (H, W, 3)
+        """
+        # Load/convert inputs to numpy arrays
+        if isinstance(img1, str):
+            img1 = imread(img1)
+        elif isinstance(img1, torch.Tensor):
+            img1 = img1.cpu().numpy()  # Move to CPU and convert to numpy
+        elif not isinstance(img1, np.ndarray):
+            raise ValueError("img1 must be a path string, numpy array, or torch tensor")
+        
+        if isinstance(img2, str):
+            img2 = imread(img2)
+        elif isinstance(img2, torch.Tensor):
+            img2 = img2.cpu().numpy()
+        elif not isinstance(img2, np.ndarray):
+            raise ValueError("img2 must be a path string, numpy array, or torch tensor")
+        
+        # Ensure same shape and RGB format
+        if img1.shape != img2.shape:
+            raise ValueError("Images must have the same shape")
+        if img1.ndim != 3 or img1.shape[-1] not in [3, 4]:
+            raise ValueError("img1 must be an RGB or RGBA image")
+        if img2.ndim != 3 or img2.shape[-1] not in [3, 4]:
+            raise ValueError("img2 must be an RGB or RGBA image")
+        
+        # Normalize to [0, 1] if necessary
+        if img1.dtype == np.uint8 or img1.max() > 1:
+            img1 = img1.astype(np.float32) / 255.0
+        if img2.dtype == np.uint8 or img2.max() > 1:
+            img2 = img2.astype(np.float32) / 255.0
+        
+        # Use only RGB channels
+        img1 = img1[..., :3]
+        img2 = img2[..., :3]
+        
+        # Compute per-channel absolute differences
+        diff = np.abs(img1 - img2)  # (H, W, 3)
+        
+        # Compute Euclidean distance across channels
+        diff_norm = np.sqrt(np.sum(diff ** 2, axis=-1))  # (H, W)
+        
+        # Normalize to [0, 1]
+        if diff_norm.max() > 0:
+            diff_norm = diff_norm / diff_norm.max()
+        else:
+            diff_norm = diff_norm  # All zeros
+        
+        # Apply 'jet' colormap
+        cmap = cm.get_cmap('jet')
+        rgba = cmap(diff_norm)  # (H, W, 4) float [0,1]
+        rgb = (rgba[..., :3] * 255).astype(np.uint8)  # (H, W, 3) uint8
+        
+        # Save if output_path provided
+        if output_path:
+            from matplotlib.image import imsave
+            imsave(output_path, rgb)
+        
+        return rgb
+
+
+    def add_colored_border(self, image_tensor, border_color, border_width=2):
+        """
+        Add a colored border around an image tensor.
+        
+        Args:
+            image_tensor: Tensor of shape [C, H, W] in range [0, 1] (VAE decoded)
+            border_color: Tuple of (R, G, B) values in range [0, 255]
+            border_width: Width of the border in pixels
+        
+        Returns:
+            Tensor with colored border
+        """
+        C, H, W = image_tensor.shape[-3:]
+        
+        # Normalize border color from [0, 255] to [0, 1] range
+        border_color = tuple(c / 255.0 for c in border_color)
+        
+        # Create border tensor
+        border_tensor = torch.tensor(border_color, dtype=image_tensor.dtype, device=image_tensor.device)
+        border_tensor = border_tensor.view(3, 1, 1).expand(3, H + 2*border_width, W + 2*border_width)
+        
+        # Create new image with border
+        bordered_image = border_tensor.clone()
+        bordered_image[:, border_width:border_width+H, border_width:border_width+W] = image_tensor
+
+        del border_tensor
+        return bordered_image
+
+    @torch.no_grad()
+    def tensor_to_image(self, tensor):
+        # Denormalize and convert to PIL image
+        tensor = tensor.cpu().squeeze(0)
+        tensor = tensor * 0.5 + 0.5  # Denormalize
+        # tensor = torch.clamp(tensor, 0, 1)
+        tensor = torch.clamp(tensor, 0, 1)
+        return tensor
+
+    @torch.no_grad()
+    def _convert_valid_log_format(self, latents, x):
+        if latents.dim() == 4 and latents.shape[0] == x.shape[0] * x.shape[1]:
+            batch_size = x.shape[0]
+            num_images = x.shape[1]
+            latents = latents.view(batch_size, num_images, *latents.shape[1:])
+        return latents
+
 
     @rank_zero_only
     def log_local(
@@ -342,14 +640,21 @@ class ImageLogger(Callback):
         save_dir,
         split,
         images,
+        masks,
         global_step,
         current_epoch,
         batch_idx,
-        pl_module: Union[None, pl.LightningModule] = None,
+        logger,
+        scale_factor,
+        # pl_module: Union[None, pl.LightningModule] = None,
     ):
         root = os.path.join(save_dir, "images", split)
+        ref_mask   = masks[0]
+        input_mask = masks[1]
+        components_for_diffmap = []
         for k in images:
             if isheatmap(images[k]):
+                self.logger.info("ImageLogger::log_local:in local log_local:heatmap:")
                 fig, ax = plt.subplots()
                 ax = ax.matshow(
                     images[k].cpu().numpy(), cmap="hot", interpolation="lanczos"
@@ -365,81 +670,269 @@ class ImageLogger(Callback):
                 plt.savefig(path)
                 plt.close()
                 # TODO: support wandb
-            else:
-                grid = torchvision.utils.make_grid(images[k], nrow=4)
-                if self.rescale:
-                    grid = (grid + 1.0) / 2.0  # -1,1 -> 0,1; c,h,w
-                grid = grid.transpose(0, 1).transpose(1, 2).squeeze(-1)
+            else:            
+                # SEVA multi-view tensors are already flattened in log_img to [N, C, H, W]
+                # Add colored borders based on image type
+                bordered_images = []
+                for i, img in enumerate(images[k]):
+                    # Determine border color based on image key or index
+                    
+                    if input_mask[i]: # inputs
+                        border_color = (247.0, 121.0, 132.0)  # red
+                    else: # targets
+                        border_color = (101.0, 174.0, 219.0)  # blue
+                    # if ref image, then should be green
+                    if ref_mask[i]:
+                        border_color = (0.0, 255.0, 0.0) # green
+
+                    img = self.tensor_to_image(img) # (-1, 1) ->(0, 1)
+                    bordered_img = self.add_colored_border(img, border_color, border_width=24)
+                    bordered_images.append(bordered_img)
+                
+                # Stack bordered images and create grid
+                # bordered_tensor = torch.stack(bordered_images)
+                # print("bordered_tensor.shape: ", bordered_tensor.shape)
+                # grid = torchvision.utils.make_grid(bordered_tensor, nrow=4, padding=24)
+                grid = torchvision.utils.make_grid(bordered_images, nrow=4, padding=24)
+                
+                # if self.rescale:
+                #     grid = (grid + 1.0) / 2.0  # -1,1 -> 0,1; c,h,w
+                
+                grid = grid.permute(1, 2, 0).squeeze(-1).to("cpu")
                 grid = grid.numpy()
                 grid = (grid * 255).astype(np.uint8)
+                if k == "reconstructions" or k == "samples":
+                    components_for_diffmap.append(grid.copy())
+
                 filename = "{}_gs-{:06}_e-{:06}_b-{:06}.png".format(
                     k, global_step, current_epoch, batch_idx
                 )
                 path = os.path.join(root, filename)
+                self.logger.info("ImageLogger::Saving image to: ", path)
                 os.makedirs(os.path.split(path)[0], exist_ok=True)
                 img = Image.fromarray(grid)
                 img.save(path)
-                if exists(pl_module):
+                if exists(logger):
                     assert isinstance(
-                        pl_module.logger, WandbLogger
+                        logger, WandbLogger
                     ), "logger_log_image only supports WandbLogger currently"
-                    pl_module.logger.log_image(
+                    logger.log_image(
                         key=f"{split}/{k}",
                         images=[
                             img,
                         ],
-                        step=pl_module.global_step,
+                        step=global_step,
                     )
+        if len(components_for_diffmap) == 2:
+            diffmap = self.diffmap(components_for_diffmap[0], components_for_diffmap[1])
+            filename = "{}_gs-{:06}_e-{:06}_b-{:06}.png".format(
+                "diffmap", global_step, current_epoch, batch_idx
+            )
+            path = os.path.join(root, filename)
+            self.logger.info("ImageLogger::Saving diffmap to: ", path)
+            os.makedirs(os.path.split(path)[0], exist_ok=True)
+            diffmap_img = Image.fromarray(diffmap)
+            diffmap_img.save(path)
+            if exists(logger):
+                logger.log_image(
+                    key=f"{split}/diffmap",
+                    images=[diffmap_img],
+                    step=global_step,
+                )
 
     @rank_zero_only
-    def log_img(self, pl_module, batch, batch_idx, split="train"):
+    def log_img(self, pl_module, batch, batch_idx, split="train", sample=True): #pl_module: DiffusionEngine
         check_idx = batch_idx if self.log_on_batch_idx else pl_module.global_step
+
+        # check if we should log at this batch index
         if (
-            self.check_frequency(check_idx)
+            getattr(self, "should_log_now", False)
+            # self.check_frequency(check_idx)
             and hasattr(pl_module, "log_images")  # batch_idx % self.batch_freq == 0
             and callable(pl_module.log_images)
-            and
-            # batch_idx > 5 and
-            self.max_images > 0
+            and self.max_images > 0
         ):
+            
             logger = type(pl_module.logger)
             is_train = pl_module.training
             if is_train:
+                # set eval for logs (sample generations before logging)
                 pl_module.eval()
 
-            gpu_autocast_kwargs = {
-                "enabled": self.enable_autocast,  # torch.is_autocast_enabled(),
-                "dtype": torch.get_autocast_gpu_dtype(),
-                "cache_enabled": torch.is_autocast_cache_enabled(),
-            }
-            with torch.no_grad(), torch.cuda.amp.autocast(**gpu_autocast_kwargs):
-                images = pl_module.log_images(
-                    batch, split=split, **self.log_images_kwargs
+            # OLD -- GPU based logging
+            # gpu_autocast_kwargs = {
+            #     "enabled": self.enable_autocast,  # torch.is_autocast_enabled(),
+            #     "dtype": torch.get_autocast_gpu_dtype(),
+            #     "cache_enabled": torch.is_autocast_cache_enabled(),
+            # }
+            # with torch.no_grad(), torch.cuda.amp.autocast(**gpu_autocast_kwargs):
+            #     # this sholud be where images are logged!
+            #     # print("ImageLogger::Logging images")
+            #     # images = pl_module.log_images(
+            #     #     batch, split=split, **self.log_images_kwargs
+            #     # )
+
+            # NEW -- CPU based logging, based on DiffusionEngine.log_images
+            # ! replaced with old GPU logging
+            with torch.no_grad():
+                conditioner_input_keys = [e.input_key for e in pl_module.conditioner.embedders]
+                if self.log_images_kwargs.get("ucg_keys"):
+                    ucg_keys = self.log_images_kwargs.get("ucg_keys")
+                    assert all(map(lambda x: x in conditioner_input_keys, ucg_keys)), (
+                        "Each defined ucg key for sampling must be in the provided conditioner input keys,"
+                        f"but we have {ucg_keys} vs. {conditioner_input_keys}"
+                    )
+                else:
+                    ucg_keys = conditioner_input_keys
+
+                log = dict()
+                x = pl_module.get_input(batch) # clean_latent
+                if len(x.shape) == 1: # if latents are NOT computed yet, encode
+                    x = batch["frames"].to(pl_module.device)
+                    batch_latents = []
+                    for b in x:
+                        batch_latents.append(pl_module.encode_first_stage(b)) # scales automatically
+                    x = torch.stack(batch_latents, dim=0)
+                else: 
+                    x = x * pl_module.scale_factor
+                batch["clean_latent"] = x
+
+                if torch.any(batch["use_inconsistent"]).item():
+                    ic = pl_module._encode_inconsistent_images(batch["ic_rgb"], batch["ref_mask"], batch["clean_latent"])
+                    # for target (not input/ref) frames, zero condition latents
+                    ic[~batch["mask"]] = 0
+                    rgb_ic = batch["ic_rgb"]
+                else:
+                    # no conditioning (to be replaced by clean_latents for inputs)
+                    ic = torch.zeros_like(batch["clean_latent"], device=pl_module.device)
+                    ic[batch["ref_mask"]] = batch["clean_latent"][batch["ref_mask"]]
+                    rgb_ic = batch["frames"] # same thing as GTs in phase 1
+
+                # update the batch using this
+                batch.update({
+                    "replace": torch.cat([
+                        batch["clean_latent"],
+                        repeat(
+                            batch["ref_mask"],
+                            "b n -> b n 1 h w",
+                            h=batch["concat"].shape[-2],
+                            w=batch["concat"].shape[-1]
+                        )
+                    ], dim=2),
+                    "concat": torch.cat([batch["concat"], ic], dim=2)
+                }) # concat to be (B, T, 6(plucker) + 2(masks) + 4(ic))
+
+                c, uc = pl_module.conditioner.get_unconditional_conditioning(
+                    batch,
+                    force_uc_zero_embeddings=ucg_keys
+                    if len(pl_module.conditioner.embedders) > 0
+                    else [],
                 )
 
-            for k in images:
-                N = min(images[k].shape[0], self.max_images)
-                if not isheatmap(images[k]):
-                    images[k] = images[k][:N]
-                if isinstance(images[k], torch.Tensor):
-                    images[k] = images[k].detach().float().cpu()
-                    if self.clamp and not isheatmap(images[k]):
-                        images[k] = torch.clamp(images[k], -1.0, 1.0)
+                uc["plucker"] = c["plucker"] # camera embeds are the same (test time)
 
-            self.log_local(
-                pl_module.logger.save_dir,
-                split,
-                images,
-                pl_module.global_step,
-                pl_module.current_epoch,
-                batch_idx,
-                pl_module=pl_module
-                if isinstance(pl_module.logger, WandbLogger)
-                else None,
-            )
+                sampling_kwargs = {}
+                if isinstance(pl_module.sampler.guider, MultiviewCFG):
+                    sampling_kwargs["c2w"] = batch.get("c2w", None)
+                    sampling_kwargs["K"] = batch.get("K", None)
+                    sampling_kwargs["input_frame_mask"] = batch.get("mask", None)
 
-            if is_train:
-                pl_module.train()
+                # keep GPU until we have the generated latents
+                N = min(x.shape[0], self.max_images) # these only get the first N batches
+                x = x.to(pl_module.device)[:N]
+                z = x
+
+                for k in c:
+                    if isinstance(c[k], torch.Tensor):
+                        c[k], uc[k] = map(lambda y: y[k][:N].to(pl_module.device), (c, uc))
+                # sample latents for targets
+                if sample:
+                    # with pl_module.ema_scope("Plotting"): 
+                    samples = pl_module.sample(
+                        c, shape=z.shape[1:], uc=uc, batch_size=N, **sampling_kwargs
+                    )
+
+                # log to wandb stage
+                gt_images = batch["frames"][:N].to("cpu") # choose first N from B
+                rgb_ic = rgb_ic[:N].to("cpu")
+                ref_mask = batch["ref_mask"][:N].to("cpu") # put into CPU (when using CPU, otherwise GPU)
+                gt_images[~ref_mask] = rgb_ic[~ref_mask]
+
+                pre_images = {} # legacy name
+                pre_images["inputs"] = gt_images
+                pre_images["reconstructions"] = z
+                if sample:
+                    pre_images["samples"] = samples
+
+                # flatten for decoder
+                for k in pre_images: # images is dict{inputs, reconstructions, samples} (as in diffusion.py)
+                    if isinstance(pre_images[k], torch.Tensor):
+                        # Handle SEVA multi-view tensors: [batch_size, num_images, C, H, W]
+                        if pre_images[k].dim() == 5:
+                            batch_size, num_images = pre_images[k].shape[:2]
+                            total_images = batch_size * num_images
+                            N = min(total_images, self.max_images)
+                            # Flatten to [batch_size*num_images, C, H, W] for easier slicing
+                            pre_images[k] = pre_images[k].view(total_images, *pre_images[k].shape[2:])
+                            pre_images[k] = pre_images[k][:N]
+                        else:
+                            N = min(pre_images[k].shape[0], self.max_images)
+                            if not isheatmap(pre_images[k]):
+                                pre_images[k] = pre_images[k][:N]
+                        
+                        # if k == "samples" or k == "reconstructions": # uncomment if using GPU-based logging
+                        #     # decode latents
+                        #     pre_images[k] = pl_module.decode_first_stage(pre_images[k])
+
+                        pre_images[k] = pre_images[k].detach().float().cpu()
+                        # move clamping POST-decoder (which has range -1, 1)
+                        # if self.clamp and not isheatmap(pre_images[k]):
+                        #     pre_images[k] = torch.clamp(pre_images[k], -1.0, 1.0)
+
+                masks = []
+                # masks = batch["mask"] # (B, max_images) binary boolean tensor
+                masks.append(batch["ref_mask"].reshape(-1)[:N].detach().cpu()) # (B, max_images) binary boolean tensor
+                masks.append(batch["mask"].reshape(-1)[:N].detach().cpu()) # (B, max_images) binary boolean tensor
+
+                if is_train: # if was training previously, set it back
+                    # this shouldn't interfere, since the VAE is frozen anyways
+                    pl_module.train()
+
+                # log images -- uncomment if using GPU-based logging
+                # self.log_local(
+                #     pl_module.logger.save_dir, split, pre_images, masks,
+                #     pl_module.global_step, pl_module.current_epoch, batch_idx, pl_module
+                # )
+
+                # add this iteration's images to the CPU-based logger queue
+                self._queue_log_task(
+                    pl_module.logger.save_dir, split, pre_images, masks,
+                    pl_module.global_step, pl_module.current_epoch, batch_idx, pl_module.logger, pl_module.scale_factor
+                )
+            
+
+            # for k in images: # images is dict{inputs, reconstructions, samples} (as in diffusion.py)
+            #     if isinstance(images[k], torch.Tensor):
+            #         # Handle SEVA multi-view tensors: [batch_size, num_images, C, H, W]
+            #         if images[k].dim() == 5:
+            #             batch_size, num_images = images[k].shape[:2]
+            #             total_images = batch_size * num_images
+            #             N = min(total_images, self.max_images)
+            #             # Flatten to [batch_size*num_images, C, H, W] for easier slicing
+            #             images[k] = images[k].view(total_images, *images[k].shape[2:])
+            #             images[k] = images[k][:N]
+            #         else:
+            #             N = min(images[k].shape[0], self.max_images)
+            #             if not isheatmap(images[k]):
+            #                 images[k] = images[k][:N]
+                    
+            #         images[k] = images[k].detach().float().cpu()
+            #         if self.clamp and not isheatmap(images[k]):
+            #             images[k] = torch.clamp(images[k], -1.0, 1.0)
+
+            # # flatten masks to correspond with images[:N], detach
+            # masks = masks.reshape(-1)[:N].detach().cpu()
+
 
     def check_frequency(self, check_idx):
         if ((check_idx % self.batch_freq) == 0 or (check_idx in self.log_steps)) and (
@@ -450,34 +943,84 @@ class ImageLogger(Callback):
             except IndexError as e:
                 print(e)
                 pass
+            self.should_log_now = True
             return True
+        self.should_log_now = False
         return False
 
-    @rank_zero_only
+    # rank 0 must generate samples and encode latents, causing a long stall that de-syncs from other ranks
+    # therefore, we don't use rank_zero_only and make other ranks wait for rank 0 to finish instead
+    # @rank_zero_only
     def on_train_batch_end(self, trainer, pl_module, outputs, batch, batch_idx):
-        if not self.disabled and (pl_module.global_step > 0 or self.log_first_step):
-            # self.log_img(pl_module, batch, batch_idx, split="train")
-            pass
+        if not self.log_train:
+            return # don't trigger any logs
+        check_idx = batch_idx if self.log_on_batch_idx else pl_module.global_step
+        should_log = (
+            (not self.disabled)
+            and (pl_module.global_step > 0 or self.log_first_step)
+            and self.check_frequency(check_idx) # this mutates in-place, so it defines a self.should_log_now!
+        )
+        # All ranks enter the barrier before logging so collectives stay in order
+        if torch.distributed.is_available() and torch.distributed.is_initialized() and should_log:
+            torch.distributed.barrier()
 
+        # Only rank 0 actually does the heavy GPU work
+        if trainer.is_global_zero and should_log:
+            self.log_img(pl_module, batch, batch_idx, split="train")
+
+        # All ranks wait again before continuing to next step
+        if torch.distributed.is_available() and torch.distributed.is_initialized() and should_log:
+            torch.distributed.barrier()
+
+    def on_exception(self, trainer, pl_module, exception):
+        self.shutdown()
+
+    def on_fit_end(self, trainer, pl_module):
+        self.shutdown()
+        
     @rank_zero_only
     def on_train_batch_start(self, trainer, pl_module, batch, batch_idx):
         if self.log_before_first_step and pl_module.global_step == 0:
-            print(f"{self.__class__.__name__}: logging before training")
+            # print(f"{self.__class__.__name__}: logging before training")
             # self.log_img(pl_module, batch, batch_idx, split="train")
             pass
 
-    @rank_zero_only
+    # same reason as on_train_batch_end
+    # ! also note: validation set should only sample very few images per num_iterations (maybe 1 or 2)
+    # ! otherwise very long wait times just for logging, slowing down training
+    # @rank_zero_only
     def on_validation_batch_end(
         self, trainer, pl_module, outputs, batch, batch_idx, *args, **kwargs
     ):
-        if not self.disabled and pl_module.global_step > 0:
-            # self.log_img(pl_module, batch, batch_idx, split="val")
-            pass
-        if hasattr(pl_module, "calibrate_grad_norm"):
-            if (
-                pl_module.calibrate_grad_norm and batch_idx % 25 == 0
-            ) and batch_idx > 0:
-                self.log_gradients(trainer, pl_module, batch_idx=batch_idx)
+        # if not self.disabled and pl_module.global_step > 0:
+        if self.disabled:
+            return
+        print(f"Logging validation at {pl_module.global_step}")
+        self.should_log_now = True
+                # All ranks enter the barrier before logging so collectives stay in order
+        if torch.distributed.is_available() and torch.distributed.is_initialized():
+            torch.distributed.barrier()
+
+        # Only rank 0 actually does the heavy GPU work
+        if trainer.is_global_zero and self.should_log_now:
+            self.log_img(pl_module, batch, batch_idx, split="val")
+
+        # All ranks wait again before continuing to next step
+        if torch.distributed.is_available() and torch.distributed.is_initialized():
+            torch.distributed.barrier()
+
+        self.should_log_now = False
+        # if hasattr(pl_module, "calibrate_grad_norm"):
+        #     if (
+        #         pl_module.calibrate_grad_norm and batch_idx % 25 == 0
+        #     ) and batch_idx > 0:
+        #         self.log_gradients(trainer, pl_module, batch_idx=batch_idx)
+
+    # ! we disable testing for now, but otherwise, for distributed, we'd change this as well.
+    @rank_zero_only
+    def on_test_batch_end(self, trainer, pl_module, outputs, batch, batch_idx, *args, **kwargs):
+        if not self.disabled:
+            self.log_img(pl_module, batch, batch_idx, split="test")
 
 
 @rank_zero_only
@@ -489,9 +1032,10 @@ def init_wandb(save_dir, opt, config, group_name, name_str):
     if opt.debug:
         wandb.init(project=opt.projectname, mode="offline", group=group_name)
     else:
+        config_dict = OmegaConf.to_container(config, resolve=True)
         wandb.init(
             project=opt.projectname,
-            config=config,
+            config=config_dict,
             settings=wandb.Settings(code_dir="./sgm"),
             group=group_name,
             name=name_str,
@@ -563,6 +1107,9 @@ if __name__ == "__main__":
         if not os.path.exists(opt.resume):
             raise ValueError("Cannot find {}".format(opt.resume))
         if os.path.isfile(opt.resume):
+            # point to a ckpt file itself
+            print(f"Resuming from checkpoint file: {opt.resume}")
+
             paths = opt.resume.split("/")
             # idx = len(paths)-paths[::-1].index("logs")+1
             # logdir = "/".join(paths[:idx])
@@ -654,18 +1201,25 @@ if __name__ == "__main__":
         print("ckpt_resume_path: ", ckpt_resume_path)
         print("trainer_config: ", trainer_config)
 
+        # Override devices from command line if provided
+        if opt.override_ngpu is not None:
+            trainer_config["devices"] = opt.override_ngpu
+            print(f"Overriding devices from command line: {opt.override_ngpu}")
+        
         if not "devices" in trainer_config and trainer_config["accelerator"] != "gpu":
             del trainer_config["accelerator"]
             cpu = True
         else:
             gpuinfo = trainer_config["devices"]
             print(f"Running on GPUs {gpuinfo}")
+            gpuinfo = [gpuinfo] # ! - CUDA Accelerate wants this as a list; if not using, comment this out
             cpu = False
+
         trainer_opt = argparse.Namespace(**trainer_config)
         lightning_config.trainer = trainer_config
 
         # model
-        model = instantiate_from_config(config.model)
+        model = instantiate_from_config(config.model) # DiffusionEngine
 
         # trainer and callbacks
         trainer_kwargs = dict()
@@ -804,7 +1358,7 @@ if __name__ == "__main__":
                         "filename": "{epoch:06}-{step:09}",
                         "verbose": True,
                         "save_top_k": -1,
-                        "every_n_train_steps": 10000,
+                        "every_n_train_steps": 1000,
                         "save_weights_only": True,
                     },
                 }
@@ -824,10 +1378,10 @@ if __name__ == "__main__":
             trainer_kwargs["plugins"] = list()
 
         # cmd line trainer args (which are in trainer_opt) have always priority over config-trainer-args (which are in trainer_kwargs)
-        trainer_opt = vars(trainer_opt)
+        trainer_opt = vars(trainer_opt) # from trainer in yaml
         trainer_kwargs = {
             key: val for key, val in trainer_kwargs.items() if key not in trainer_opt
-        }
+        } # logger, strategy, callbacks, etc.
         trainer = Trainer(**trainer_opt, **trainer_kwargs)
 
         trainer.logdir = logdir  ###
@@ -871,7 +1425,7 @@ if __name__ == "__main__":
             print(f"Setting learning rate to {model.learning_rate:.2e}")
 
         # allow checkpointing via USR1
-        def melk(*args, **kwargs):
+        def melk(*args, **kwargs): # emergency checkpointing
             # run all checkpoint hooks
             if trainer.global_rank == 0:
                 print("Summoning checkpoint.")
@@ -881,7 +1435,7 @@ if __name__ == "__main__":
                     ckpt_path = os.path.join(ckptdir, melk_ckpt_name)
                 trainer.save_checkpoint(ckpt_path)
 
-        def divein(*args, **kwargs):
+        def divein(*args, **kwargs): # emergency debugger
             if trainer.global_rank == 0:
                 import pudb
 
@@ -895,8 +1449,10 @@ if __name__ == "__main__":
         # run
         if opt.train:
             try:
+                print(model)
                 trainer.fit(model, data, ckpt_path=ckpt_resume_path)
-            except Exception:
+            except Exception as e:
+                print(f"Error: {e}")
                 if not opt.debug:
                     melk()
                 raise

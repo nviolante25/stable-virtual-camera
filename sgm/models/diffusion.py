@@ -7,6 +7,9 @@ import torch
 from omegaconf import ListConfig, OmegaConf
 from safetensors.torch import load_file as load_safetensors
 from torch.optim.lr_scheduler import LambdaLR
+from PIL import Image
+import torchvision.transforms.v2 as T
+from einops import repeat
 
 from ..modules import UNCONDITIONAL_CONFIG
 from ..modules.autoencoding.temporal_ae import VideoDecoder
@@ -14,6 +17,12 @@ from ..modules.diffusionmodules.wrappers import OPENAIUNETWRAPPER
 from ..modules.ema import LitEma
 from ..util import (default, disabled_train, get_obj_from_str,
                     instantiate_from_config, log_txt_as_img)
+from seva.sampling import MultiviewCFG
+import gc
+
+def compute_psnr(pred, target):
+    mse = torch.nn.functional.mse_loss(pred, target)
+    return 10 * torch.log10(1.0 / mse)
 
 
 class DiffusionEngine(pl.LightningModule):
@@ -38,6 +47,7 @@ class DiffusionEngine(pl.LightningModule):
         no_cond_log: bool = False,
         compile_model: bool = False,
         en_and_decode_n_samples_a_time: Optional[int] = None,
+        verbose_lora_deltas: bool = False
     ):
         super().__init__()
         self.log_keys = log_keys
@@ -81,13 +91,14 @@ class DiffusionEngine(pl.LightningModule):
             self.init_from_ckpt(ckpt_path)
 
         self.en_and_decode_n_samples_a_time = en_and_decode_n_samples_a_time
+        self.verbose_lora_deltas = verbose_lora_deltas
 
     def init_from_ckpt(
         self,
         path: str,
     ) -> None:
         if path.endswith("ckpt"):
-            sd = torch.load(path, map_location="cpu")["state_dict"]
+            sd = torch.load(path, map_location="cpu", weights_only=False)["state_dict"]
         elif path.endswith("safetensors"):
             sd = load_safetensors(path)
         else:
@@ -123,7 +134,8 @@ class DiffusionEngine(pl.LightningModule):
         all_out = []
         with torch.autocast("cuda", enabled=not self.disable_first_stage_autocast):
             for n in range(n_rounds):
-                if isinstance(self.first_stage_model.decoder, VideoDecoder):
+                if hasattr(self.first_stage_model, "decoder") and \
+                    isinstance(self.first_stage_model.decoder, VideoDecoder):
                     kwargs = {"timesteps": len(z[n * n_samples : (n + 1) * n_samples])}
                 else:
                     kwargs = {}
@@ -150,22 +162,141 @@ class DiffusionEngine(pl.LightningModule):
         return z
 
     def forward(self, x, batch):
-        print("\nDiffusionEngine::forward self.conditioner:\n", self.conditioner)
         loss = self.loss_fn(self.model, self.denoiser, self.conditioner, x, batch)
         loss_mean = loss.mean()
         loss_dict = {"loss": loss_mean}
         return loss_mean, loss_dict
 
-    def shared_step(self, batch: Dict) -> Any:
+    def _prepare_batch(self, batch: Dict):
+        """
+        Prepares the batch using IC latents and masks.
+        Outputs the original clean_latents (x) and the prepared batch.
+        """
         x = self.get_input(batch)
-        x = self.encode_first_stage(x)
-        batch["global_step"] = self.global_step
+        if len(x.shape) == 1: # latents are NOT computed yet
+            x = batch["frames"].to(self.device)
+            batch_latents = []
+            for b in x:
+                batch_latents.append(self.encode_first_stage(b))
+            x = torch.stack(batch_latents, dim=0)
+            batch["clean_latent"] = x
+        else: #latents already precomputed (same as "IdentityEncoder")
+            batch["clean_latent"] = x * self.scale_factor # need to scale!
+
+        # encode ic latents from the paths (scales)
+        if torch.any(batch["use_inconsistent"]).item():
+            ic = self._encode_inconsistent_images(batch["ic_rgb"], batch["ref_mask"], batch["clean_latent"])
+            # for target (not input/ref) frames, zero condition latents
+            ic[~batch["mask"]] = 0
+        else:
+            # no conditioning (to be replaced by clean_latents for inputs)
+            ic = torch.zeros_like(batch["clean_latent"], device=self.device)
+            ic[batch["ref_mask"]] = batch["clean_latent"][batch["ref_mask"]]
+
+        # ensure for ref image, ic tensors should be replaced by clean latents 
+        # add ic as conditioning in concat (along with clean + plucker + masks)
+        batch.update({
+            "replace": torch.cat([
+                batch["clean_latent"],
+                repeat(
+                    batch["ref_mask"],
+                    "b n -> b n 1 h w",
+                    h=batch["plucker"].shape[-2],
+                    w=batch["plucker"].shape[-1]
+                )
+            ], dim=2),
+            "concat": torch.cat([batch["concat"], ic], dim=2)
+        }) # concat to be (B, T, 6(plucker) + 2(masks) + 4(ic))
+        return x, batch
+
+    def _encode_inconsistent_images(
+        self,
+        ic_rgb: torch.Tensor,
+        ref_mask: torch.Tensor,
+        clean_latent: torch.Tensor,
+        chunk_size: int = 2
+    ) -> torch.Tensor:
+        # TODO: optimize such that we only encode images that are needed using ref_mask
+        old_chunk_size = self.en_and_decode_n_samples_a_time
+        self.en_and_decode_n_samples_a_time = chunk_size # for logging, 2 images at a time to reduce fragmentation
+        # load images from paths and convert to tensors
+        B, num_images = ic_rgb.shape[0:2]
+        latents_out = torch.empty(B, num_images, 4, 72, 72, device=self.device)
+        with torch.no_grad():
+            for i in range(B):
+                latents_out[i] = self.encode_first_stage(ic_rgb[i].to(self.device))
+            # replace latents with clean latents for ref images
+            latents_out[ref_mask] = clean_latent[ref_mask]
+        self.en_and_decode_n_samples_a_time = old_chunk_size
+        return latents_out # latents_out is in GPU, rgb_images in CPU
+
+    def shared_step(self, batch: Dict) -> Any: 
+        x, batch = self._prepare_batch(batch)
         loss, loss_dict = self(x, batch)
+        batch["global_step"] = self.global_step
         return loss, loss_dict
 
+    def infer(self, batch: Dict, scale: float = 1.0):
+        """
+        Runs forward pass of SEVA in eval mode for convenience.
+        Takes in a batch (from the dataloader) and returns the latents.
+        """
+        x, batch = self._prepare_batch(batch)
+        conditioner_input_keys = [e.input_key for e in self.conditioner.embedders]
+        ucg_keys = conditioner_input_keys
+
+        # get conditionings
+        c, uc = self.conditioner.get_unconditional_conditioning(
+                    batch,
+                    force_uc_zero_embeddings=ucg_keys
+                    if len(self.conditioner.embedders) > 0
+                    else [],
+                )
+
+        uc["plucker"] = c["plucker"] # seva@test doesn't zero out pluckers for uc
+
+        # prepare the MV CFG parameters
+        # (adapts the CFG depending on the distance away from the input frames)
+        sampling_kwargs = {}
+        if isinstance(self.sampler.guider, MultiviewCFG):
+            sampling_kwargs["c2w"] = batch.get("c2w", None)
+            sampling_kwargs["K"] = batch.get("K", None)
+            sampling_kwargs["input_frame_mask"] = batch.get("mask", None)
+            sampling_kwargs["scale"] = scale
+
+        # these are all latents
+        N = x.shape[0]
+        x = x.to(self.device)
+        z = x
+
+        for k in c:
+            if isinstance(c[k], torch.Tensor):
+                c[k], uc[k] = map(lambda y: y[k][:N].to(self.device), (c, uc))
+
+        samples = self.sample(
+            c, shape=z.shape[1:], uc=uc, batch_size=N, **sampling_kwargs
+        )
+
+        return samples
+        
     def training_step(self, batch, batch_idx):
-        print("\nDiffusionEngine::training_step batch:\n", batch)
+        # print("\nDiffusionEngine::training_step batch:\n", batch)
         loss, loss_dict = self.shared_step(batch)
+
+        # Debug: Check LoRA gradients after backward
+        # if batch_idx % 10 == 0 and self.verbose_lora_deltas:  # Check every 10 batches
+        #     lora_grads = []
+        #     for name, param in self.model.named_parameters():
+        #         if 'lora' in name and param.grad is not None:
+        #             grad_norm = param.grad.norm().item()
+        #             lora_grads.append((name, grad_norm))
+            
+        #     if lora_grads:
+        #         print(f"Batch {batch_idx} - LoRA gradients found:")
+        #         for name, grad_norm in lora_grads[:3]:  # Show first 3
+        #             print(f"  {name}: grad_norm = {grad_norm:.6f}")
+        #     else:
+        #         print(f"Batch {batch_idx} - NO LoRA gradients found!")
 
         self.log_dict(
             loss_dict, prog_bar=True, logger=True, on_step=True, on_epoch=False
@@ -188,13 +319,84 @@ class DiffusionEngine(pl.LightningModule):
 
         return loss
 
+    def validation_step(self, batch, batch_idx):
+        # TODO: add this in in place of training image logs (not tested yet)
+        loss, loss_dict = self.shared_step(batch)
+        # log averaged validation loss; keep per-step metrics off
+        val_dict = {f"val_{k}": v for k, v in loss_dict.items()}
+        self.log_dict(val_dict, prog_bar=True, logger=True, on_step=False, on_epoch=True, sync_dist=True)
+        return loss
+
+    def test_step(self, batch, batch_idx):
+        # Get ground truth images
+        x = self.get_input(batch)
+        
+        # Generate samples
+        c, uc = self.conditioner.get_unconditional_conditioning(batch)
+        samples = self.sample(c, uc=uc, batch_size=x.shape[0], shape=self.encode_first_stage(x).shape[1:])
+        samples = self.decode_first_stage(samples)
+        
+        # Compute metrics
+        metrics = {
+            'mse': torch.nn.functional.mse_loss(samples, x),
+            'psnr': compute_psnr(samples, x),
+            # 'ssim': self.compute_ssim(samples, x)
+        }
+        
+        # Log metrics
+        self.log_dict(metrics, prog_bar=True, logger=True)
+        
+        # Log images for visualization
+        if batch_idx == 0:
+            # Add debug prints
+            print("Attempting to log images...")
+            images = self.log_images(batch, N=min(8, x.shape[0]), sample=True)
+            print(images["reconstructions"].shape)
+            print("max: ", images["reconstructions"].max())
+            print("min: ", images["reconstructions"].min())
+            print(f"Generated image keys: {list(images.keys())}")
+        
+        return metrics
+
+    def on_train_epoch_end(self, *args, **kwargs):
+        # clear multiple GPU cache 
+        # torch.cuda.empty_cache()
+        # gc.collect()
+
+        # if torch.distributed.is_initialized():
+        #     torch.distributed.barrier()
+        pass
+
     def on_train_start(self, *args, **kwargs):
         if self.sampler is None or self.loss_fn is None:
             raise ValueError("Sampler and loss function need to be set for training.")
+        
+        # Store initial LoRA parameter values for tracking changes
+        # self.initial_lora_params = {}
+        # for name, param in self.model.named_parameters():
+        #     if 'lora' in name:
+        #         self.initial_lora_params[name] = param.data.clone()
+        # print(f"Stored initial values for {len(self.initial_lora_params)} LoRA parameters")
 
     def on_train_batch_end(self, *args, **kwargs):
         if self.use_ema:
             self.model_ema(self.model)
+        
+        # # Check LoRA parameter changes every 100 batches
+        # if hasattr(self, 'initial_lora_params') and self.global_step % 100 == 0 and self.verbose_lora_deltas:
+        #     print(f"\n=== Global Step {self.global_step} - LoRA Parameter Changes ===")
+        #     total_change = 0
+        #     for name, param in self.model.named_parameters():
+        #         if 'lora' in name and name in self.initial_lora_params:
+        #             change = (param.data - self.initial_lora_params[name]).abs().mean().item()
+        #             total_change += change
+        #             if change > 1e-6:  # Only show significant changes
+        #                 print(f"  {name}: mean_change = {change:.8f}")
+            
+        #     if total_change < 1e-6:
+        #         print("  WARNING: No significant LoRA parameter changes detected!")
+        #     print(f"  Total mean change: {total_change:.8f}")
+        #     print("=" * 60)
 
     @contextmanager
     def ema_scope(self, context=None):
@@ -218,13 +420,20 @@ class DiffusionEngine(pl.LightningModule):
 
     def configure_optimizers(self):
         lr = self.learning_rate
-        params = list(self.model.parameters())
+        params = []
+        # params = list(self.model.parameters())
+
+        for name, param in self.model.named_parameters():
+            if param.requires_grad:
+                params = params + [param]
+
+        # Write trainable embedders to file
         for embedder in self.conditioner.embedders:
             if embedder.is_trainable:
                 params = params + list(embedder.parameters())
-        opt = self.instantiate_optimizer_from_config(params, lr, self.optimizer_config)
+        opt = self.instantiate_optimizer_from_config(params, lr, self.optimizer_config) # AdamW
         if self.scheduler_config is not None:
-            scheduler = instantiate_from_config(self.scheduler_config)
+            scheduler = instantiate_from_config(self.scheduler_config) # LambdaLinearScheduler
             print("Setting up LambdaLR scheduler...")
             scheduler = [
                 {
@@ -246,11 +455,15 @@ class DiffusionEngine(pl.LightningModule):
         **kwargs,
     ):
         randn = torch.randn(batch_size, *shape).to(self.device)
-
         denoiser = lambda input, sigma, c: self.denoiser(
             self.model, input, sigma, c, **kwargs
         )
-        samples = self.sampler(denoiser, randn, cond, uc=uc)
+        if isinstance(self.sampler.guider, MultiviewCFG): # or anything that accepts kwargs
+            scale = kwargs.get("scale", 2.0)
+            kwargs.pop("scale", None) # remove scale from kwargs
+            samples = self.sampler(denoiser, randn, scale=scale, cond=cond, uc=uc, **kwargs)
+        else:
+            samples = self.sampler(denoiser, randn, scale=scale, cond=cond, uc=uc)
         return samples
 
     @torch.no_grad()
@@ -259,7 +472,11 @@ class DiffusionEngine(pl.LightningModule):
         Defines heuristics to log different conditionings.
         These can be lists of strings (text-to-image), tensors, ints, ...
         """
-        image_h, image_w = batch[self.input_key].shape[2:]
+        # [batch_size, num_images, channels, height, width]
+        input_tensor = batch[self.input_key]
+        image_h, image_w = input_tensor.shape[-2:]
+            
+        print(f"Input tensor shape: {input_tensor.shape}, extracting H={image_h}, W={image_w}")
         log = dict()
 
         for embedder in self.conditioner.embedders:
@@ -269,7 +486,7 @@ class DiffusionEngine(pl.LightningModule):
                 x = batch[embedder.input_key][:n]
                 if isinstance(x, torch.Tensor):
                     if x.dim() == 1:
-                        # class-conditional, convert integer to string
+                        # class-conditional, convert integer to stringa
                         x = [str(x[i].item()) for i in range(x.shape[0])]
                         xc = log_txt_as_img((image_h, image_w), x, size=image_h // 4)
                     elif x.dim() == 2:
@@ -301,7 +518,8 @@ class DiffusionEngine(pl.LightningModule):
         ucg_keys: List[str] = None,
         **kwargs,
     ) -> Dict:
-        conditioner_input_keys = [e.input_key for e in self.conditioner.embedders]
+        # no longer using this
+        conditioner_input_keys = [e.input_key for e in self.conditioner.embedders] # plucker, concat, replace, mask, None
         if ucg_keys:
             assert all(map(lambda x: x in conditioner_input_keys, ucg_keys)), (
                 "Each defined ucg key for sampling must be in the provided conditioner input keys,"
@@ -311,7 +529,7 @@ class DiffusionEngine(pl.LightningModule):
             ucg_keys = conditioner_input_keys
         log = dict()
 
-        x = self.get_input(batch)
+        x = self.get_input(batch) # clean_latent
 
         c, uc = self.conditioner.get_unconditional_conditioning(
             batch,
@@ -320,18 +538,36 @@ class DiffusionEngine(pl.LightningModule):
             else [],
         )
 
-        sampling_kwargs = {}
-
         N = min(x.shape[0], N)
         x = x.to(self.device)[:N]
-        log["inputs"] = x
-        z = self.encode_first_stage(x)
-        log["reconstructions"] = self.decode_first_stage(z)
-        log.update(self.log_conditionings(batch, N))
+        # log["inputs"] = x
+        z = self.encode_first_stage(x) # identity
+        reconstructions = self.decode_first_stage(z)
+        gt_images = batch["frames"]
+        log["inputs"] = gt_images[:N]
+
+        # Handle SEVA multi-view reconstructions: reshape [batch_size*num_images, C, H, W] -> [batch_size, num_images, C, H, W]
+        if reconstructions.dim() == 4 and reconstructions.shape[0] == x.shape[0] * x.shape[1]:
+            # This is a SEVA multi-view output
+            batch_size = x.shape[0]
+            num_images = x.shape[1]
+            reconstructions = reconstructions.view(batch_size, num_images, *reconstructions.shape[1:])
+            log["reconstructions"] = reconstructions
+        else:
+            log["reconstructions"] = reconstructions
+            
+        # log.update(self.log_conditionings(batch, N))
 
         for k in c:
             if isinstance(c[k], torch.Tensor):
                 c[k], uc[k] = map(lambda y: y[k][:N].to(self.device), (c, uc))
+
+        sampling_kwargs = {}
+        if isinstance(self.sampler, MultiviewCFG):
+            sampling_kwargs["c2w"] = batch.get("c2w", None)
+            sampling_kwargs["K"] = batch.get("K", None)
+            sampling_kwargs["input_frame_mask"] = batch.get("input_frame_mask", None)
+            sampling_kwargs["scale"] = kwargs.get("scale", 2.0)
 
         if sample:
             with self.ema_scope("Plotting"):
@@ -339,5 +575,15 @@ class DiffusionEngine(pl.LightningModule):
                     c, shape=z.shape[1:], uc=uc, batch_size=N, **sampling_kwargs
                 )
             samples = self.decode_first_stage(samples)
-            log["samples"] = samples
+            
+            # Handle SEVA multi-view outputs: reshape [batch_size*num_images, C, H, W] -> [batch_size, num_images, C, H, W]
+            if samples.dim() == 4 and samples.shape[0] == x.shape[0] * x.shape[1]:
+                # This is a SEVA multi-view output
+                batch_size = x.shape[0]
+                num_images = x.shape[1]
+                samples = samples.view(batch_size, num_images, *samples.shape[1:])
+                log["samples"] = samples
+            else:
+                log["samples"] = samples
+        print("log_images end, keys: ", log.keys())
         return log
